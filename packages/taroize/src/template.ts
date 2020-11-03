@@ -1,7 +1,7 @@
 import { NodePath } from 'babel-traverse'
 import * as t from 'babel-types'
-import { buildRender, buildBlockElement, pascalName } from './utils'
-import { resolve } from 'path'
+import { buildRender, buildBlockElement, pascalName, setting } from './utils'
+import { resolve, relative } from 'path'
 import * as fs from 'fs'
 import { parseWXML, createWxmlVistor } from './wxml'
 import { errors } from './global'
@@ -10,7 +10,7 @@ function isNumeric (n) {
   return !isNaN(parseFloat(n)) && isFinite(n)
 }
 
-const NumberWords = ['z', 'a','b','c','d','e', 'f','g','h','i','j']
+const NumberWords = ['z', 'b','c','d','e', 'f','g','h','i','j','k']
 
 function buildTemplateName (name: string) {
   if (/wx/i.test(name)) {
@@ -176,7 +176,19 @@ export function parseModule (jsx: NodePath<t.JSXElement>, dirPath: string, type:
   if (!value.isStringLiteral()) {
     throw new Error(`${type} 标签的 src 属性值必须是一个字符串`)
   }
-  const srcValue = value.node.value
+  let srcValue = value.node.value
+  if (srcValue.startsWith('/')) {
+    const vpath = resolve(setting.rootPath, srcValue.substr(1))
+    if (!fs.existsSync(vpath)) {
+      throw new Error(`import/include 的 src 请填入相对路径再进行转换：src="${srcValue}"`)
+    }
+    let relativePath = relative(dirPath, vpath)
+    relativePath = relativePath.replace(/\\/g, '/')
+    if (relativePath.indexOf('.') !== 0) {
+      srcValue = './' + relativePath
+    }
+    srcValue = relativePath
+  }
   if (type === 'import') {
     const wxml = getWXMLsource(dirPath, srcValue, type)
     const { imports } = parseWXML(resolve(dirPath, srcValue), wxml, true)
@@ -187,8 +199,17 @@ export function parseModule (jsx: NodePath<t.JSXElement>, dirPath: string, type:
     }
     return imports
   } else {
-    const { wxml } = parseWXML(dirPath, getWXMLsource(dirPath, srcValue, type), true)
+    const wxmlStr = getWXMLsource(dirPath, srcValue, type)
     const block = buildBlockElement()
+    if (wxmlStr === '') {
+      if (jsx.node.children.length) {
+        // tslint:disable-next-line: no-console
+        console.error(`标签: <include src="${srcValue}"> 没有自动关闭。形如：<include src="${srcValue}" /> 才是标准的 wxml 格式。`)
+      }
+      jsx.remove()
+      return
+    }
+    const { wxml } = parseWXML(dirPath, wxmlStr, true)
     try {
       if (wxml) {
         block.children = [wxml as any]

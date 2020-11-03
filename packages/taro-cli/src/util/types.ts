@@ -49,7 +49,10 @@ export interface IBuildConfig {
   watch?: boolean,
   platform?: string,
   port?: number,
-  release?: boolean
+  release?: boolean,
+  page?: string,
+  component?: string,
+  uiIndex?: string
 }
 
 export interface IMiniAppBuildConfig {
@@ -57,7 +60,9 @@ export interface IMiniAppBuildConfig {
   watch?: boolean,
   envHasBeenSet?: boolean,
   port?: number,
-  release?: boolean
+  release?: boolean,
+  page?: string,
+  component?: string
 }
 
 export interface IOption {
@@ -68,7 +73,8 @@ export interface ICopyOptions {
   patterns: {
     from: string,
     to: string,
-    ignore?: string[]
+    ignore?: string[],
+    watch?: boolean
   }[],
   options: {
     ignore?: string[]
@@ -98,7 +104,8 @@ export namespace PostcssOption {
     generateScopedName: string
   }>
   export type url = TogglableOptions<{
-    limit: number
+    limit: number,
+    basePath?: string | string[]
   }>
 }
 
@@ -122,12 +129,22 @@ export interface IMiniAppConfig {
     postcss?: IPostcssOption
   },
   compile?: ICompileOption,
-  customFilesTypes: IMINI_APP_FILE_TYPE
+  customFilesTypes: IMINI_APP_FILE_TYPE,
+  publicPath?: string,
+  staticDirectory?: string
 }
 
 export type TogglableOptions<T = IOption> = {
   enable?: boolean,
   config?: T
+}
+
+export interface IH5RouterConfig {
+  mode?: 'hash' | 'browser' | 'multi',
+  customRoutes?: IOption,
+  basename?: string,
+  lazyload?: boolean | ((pagename: string) => boolean)
+  renamePagename?: (pagename: string) => string
 }
 
 export interface IH5Config {
@@ -138,14 +155,12 @@ export interface IH5Config {
   alias: IOption,
   entry: webpack.Entry,
   output: webpack.Output,
-  router?: {
-    mode?: 'hash' | 'browser',
-    custouRoutes?: IOption
-  },
+  router?: IH5RouterConfig,
   devServer: webpackDevServer.Configuration,
   enableSourceMap: boolean,
   enableExtract: boolean,
   enableDll: boolean,
+  transformOnly: boolean,
 
   cssLoaderOption: IOption,
   styleLoaderOption: IOption,
@@ -323,21 +338,25 @@ export interface IManifestConfig extends ITaroManifestConfig {
   display?: IDisplayConfig
 }
 
+export interface IDeviceRatio {
+  [key: string]: number
+}
 
 export interface IProjectConfig {
   projectName?: string,
   date?: string,
   designWidth?: number,
   watcher?: [],
-  deviceRatio?: {
-    [key: string]: number
-  },
+  deviceRatio?: IDeviceRatio,
   sourceRoot?: string,
   outputRoot?: string,
   plugins?: {
     babel?: IBabelOptions,
     csso?: TogglableOptions,
     uglify?: TogglableOptions
+  },
+  ui?: {
+    extraWatchFiles?: any[]
   },
   env?: IOption,
   alias?: IOption,

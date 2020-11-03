@@ -1,6 +1,17 @@
 import { shouleBeObject, getParameterError } from '../utils'
 
-export default function chooseImage (options) {
+/**
+ * 从本地相册选择图片或使用相机拍照。
+ * @param {Object} object 参数
+ * @param {string[]} [object.sourceType=['album', 'camera']] 选择图片的来源，h5允许传入 `user/environment/camera/`
+ * @param {string[]} [object.sizeType=['original', 'compressed']] 所选的图片的尺寸（h5端未实现）
+ * @param {number} [object.count=9] 最多可以选择的图片张数
+ * @param {function} [object.success] 接口调用成功的回调函数
+ * @param {function} [object.fail] 接口调用失败的回调函数
+ * @param {function} [object.complete] 接口调用结束的回调函数（调用成功、失败都会执行）
+ * @param {string} [object.imageId] 用来上传的input元素ID（仅h5端）
+ */
+const chooseImage = function (options) {
   // options must be an Object
   const isObject = shouleBeObject(options)
   if (!isObject.res) {
@@ -9,12 +20,14 @@ export default function chooseImage (options) {
     return Promise.reject(res)
   }
 
-  const { count = 1, success, fail, complete } = options
+  const { count = 1, success, fail, complete, imageId = 'taroChooseImage', sourceType = ['album', 'camera'] } = options
   const res = {
     errMsg: 'chooseImage:ok',
     tempFilePaths: [],
     tempFiles: []
   }
+  const sourceTypeString = sourceType && sourceType.toString()
+  const acceptableSourceType = ['user', 'environment', 'camera']
 
   if (count && typeof count !== 'number') {
     res.errMsg = getParameterError({
@@ -29,16 +42,27 @@ export default function chooseImage (options) {
     return Promise.reject(res)
   }
 
-  let taroChooseImageId = document.getElementById('taroChooseImage')
+  let taroChooseImageId = document.getElementById(imageId)
   if (!taroChooseImageId) {
     let obj = document.createElement('input')
     obj.setAttribute('type', 'file')
-    obj.setAttribute('id', 'taroChooseImage')
-    obj.setAttribute('multiple', 'multiple')
+    obj.setAttribute('id', imageId)
+    if (count > 1) {
+      obj.setAttribute('multiple', 'multiple')
+    }
+    if (acceptableSourceType.indexOf(sourceTypeString) > -1) {
+      obj.setAttribute('capture', sourceTypeString)
+    }
     obj.setAttribute('accept', 'image/*')
     obj.setAttribute('style', 'position: fixed; top: -4000px; left: -3000px; z-index: -300;')
     document.body.appendChild(obj)
-    taroChooseImageId = document.getElementById('taroChooseImage')
+    taroChooseImageId = document.getElementById(imageId)
+  } else {
+    if (acceptableSourceType.indexOf(sourceTypeString) > -1) {
+      taroChooseImageId.setAttribute('capture', sourceTypeString)
+    } else {
+      taroChooseImageId.removeAttribute('capture')
+    }
   }
   let taroChooseImageCallback
   const taroChooseImagePromise = new Promise(resolve => {
@@ -48,16 +72,22 @@ export default function chooseImage (options) {
   TaroMouseEvents.initEvent('click', true, true)
   taroChooseImageId.dispatchEvent(TaroMouseEvents)
   taroChooseImageId.onchange = function (e) {
-    let arr = Array.from(e.target.files)
+    let arr = [...e.target.files]
+    arr = arr.splice(0, count)
     arr && arr.forEach(item => {
-      let blob = new Blob([item])
+      let blob = new Blob([item], {
+        type: item.type
+      })
       let url = URL.createObjectURL(blob)
       res.tempFilePaths.push(url)
-      res.tempFiles.push({path: url, size: item.size, type: item.type})
+      res.tempFiles.push({path: url, size: item.size, type: item.type, originalFileObj: item})
     })
     typeof success === 'function' && success(res)
     typeof complete === 'function' && complete(res)
     taroChooseImageCallback(res)
+    e.target.value = ''
   }
   return taroChooseImagePromise
 }
+
+export default chooseImage

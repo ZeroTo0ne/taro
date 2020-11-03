@@ -3,36 +3,72 @@ import {
   internal_safe_set as safeSet,
   commitAttachRef,
   Current,
-  invokeEffects
+  invokeEffects,
+  getIsUsingDiff
 } from '@tarojs/taro'
-// import PropTypes from 'prop-types'
+import PropTypes from 'prop-types'
 import { componentTrigger } from './create-component'
-import { shakeFnFromObject, isEmptyObject, diffObjToPath } from './util'
+import { cloneDeep, isEmptyObject, diffObjToPath, isFunction, isUndefined, isArray } from './util'
+import { enqueueRender } from './render-queue'
 
-// const isDEV = typeof process === 'undefined' ||
-//   !process.env ||
-//   process.env.NODE_ENV !== 'production'
+const isDEV = typeof process === 'undefined' ||
+  !process.env ||
+  process.env.NODE_ENV !== 'production'
+
+function hasNewLifecycle (component) {
+  const { constructor: { getDerivedStateFromProps }, getSnapshotBeforeUpdate } = component
+  return isFunction(getDerivedStateFromProps) || isFunction(getSnapshotBeforeUpdate)
+}
+
+function callGetDerivedStateFromProps (component, props, state) {
+  const { getDerivedStateFromProps } = component.constructor
+  let newState
+  if (isFunction(getDerivedStateFromProps)) {
+    const partialState = getDerivedStateFromProps(props, state)
+    if (!isUndefined(partialState)) {
+      newState = Object.assign({}, state, partialState)
+    } else {
+      console.warn('getDerivedStateFromProps 没有返回任何内容，这个生命周期必须返回 null 或一个新对象。')
+    }
+  }
+  return newState
+}
+
+function callGetSnapshotBeforeUpdate (component, props, state) {
+  const { getSnapshotBeforeUpdate } = component
+  let snapshot
+  if (isFunction(getSnapshotBeforeUpdate)) {
+    snapshot = getSnapshotBeforeUpdate.call(component, props, state)
+  }
+  return snapshot
+}
 
 export function updateComponent (component) {
-  const { props } = component
-  // if (isDEV && __propTypes) {
-  //   const componentName = component.constructor.name || component.constructor.toString().match(/^function\s*([^\s(]+)/)[1]
-  //   PropTypes.checkPropTypes(__propTypes, props, 'prop', componentName)
-  // }
+  const { props, __propTypes } = component
+  if (isDEV && __propTypes) {
+    let componentName = component.constructor.name
+    if (isUndefined(componentName)) {
+      const names = component.constructor.toString().match(/^function\s*([^\s(]+)/)
+      componentName = isArray(names) ? names[0] : 'Component'
+    }
+    PropTypes.checkPropTypes(__propTypes, props, 'prop', componentName)
+  }
   const prevProps = component.prevProps || props
   component.props = prevProps
-  if (component.__mounted && component._unsafeCallUpdate === true && component.componentWillReceiveProps) {
+  if (component.__mounted && component._unsafeCallUpdate === true && !hasNewLifecycle(component) && component.componentWillReceiveProps) {
     component._disable = true
     component.componentWillReceiveProps(props)
     component._disable = false
   }
-  // 在willMount前执行构造函数的副本
-  if (!component.__componentWillMountTriggered) {
-    component._constructor && component._constructor(props)
-  }
   let state = component.getState()
 
   const prevState = component.prevState || state
+
+  const stateFromProps = callGetDerivedStateFromProps(component, props, state)
+
+  if (!isUndefined(stateFromProps)) {
+    state = stateFromProps
+  }
 
   let skip = false
   if (component.__mounted) {
@@ -40,18 +76,15 @@ export function updateComponent (component) {
       !component._isForceUpdate &&
       component.shouldComponentUpdate(props, state) === false) {
       skip = true
-    } else if (typeof component.componentWillUpdate === 'function') {
+    } else if (!hasNewLifecycle(component) && isFunction(component.componentWillUpdate)) {
       component.componentWillUpdate(props, state)
     }
   }
+
   component.props = props
   component.state = state
   component._dirty = false
   component._isForceUpdate = false
-  if (!component.__componentWillMountTriggered) {
-    component.__componentWillMountTriggered = true
-    componentTrigger(component, 'componentWillMount')
-  }
   if (!skip) {
     doUpdate(component, prevProps, prevState)
   }
@@ -59,18 +92,61 @@ export function updateComponent (component) {
   component.prevState = component.state
 }
 
+export function mountComponent (component) {
+  const { props } = component
+  // 在willMount前执行构造函数的副本
+  if (!component.__componentWillMountTriggered) {
+    component._constructor && component._constructor(props)
+  }
+
+  const newState = callGetDerivedStateFromProps(component, props, component.state)
+
+  if (!isUndefined(newState)) {
+    component.state = newState
+  }
+
+  component._dirty = false
+  component._disable = false
+  component._isForceUpdate = false
+  if (!component.__componentWillMountTriggered) {
+    component.__componentWillMountTriggered = true
+    if (!hasNewLifecycle(component)) {
+      componentTrigger(component, 'componentWillMount')
+    }
+  }
+  doUpdate(component, props, component.state)
+  component.prevProps = component.props
+  component.prevState = component.state
+}
+
+function injectContextType (component) {
+  const ctxType = component.constructor.contextType
+  if (ctxType) {
+    const context = ctxType.context
+    const emitter = context.emitter
+    if (emitter === null) {
+      component.context = context._defaultValue
+      return
+    }
+    if (!component._hasContext) {
+      component._hasContext = true
+      emitter.on(_ => enqueueRender(component))
+    }
+    component.context = emitter.value
+  }
+}
+
 function doUpdate (component, prevProps, prevState) {
   const { state, props = {} } = component
   let data = state || {}
   if (component._createData) {
-    // 返回null或undefined则保持不变
-    const runLoopRef = !component.__mounted
     if (component.__isReady) {
+      injectContextType(component)
       Current.current = component
       Current.index = 0
       invokeEffects(component, true)
     }
-    data = component._createData(state, props, runLoopRef) || data
+    data = component._createData(state, props) || data
     if (component.__isReady) {
       Current.current = null
     }
@@ -85,10 +161,10 @@ function doUpdate (component, prevProps, prevState) {
         return
       }
       if (typeof val === 'object') {
-        if (isEmptyObject(val)) return safeSet(_data, key, val)
+        if (isEmptyObject(val)) return safeSet(_data, key, {})
 
-        val = shakeFnFromObject(val)
-        // 避免筛选完 Fn 后产生了空对象还去渲染
+        val = cloneDeep(val)
+
         if (!isEmptyObject(val)) safeSet(_data, key, val)
       } else {
         safeSet(_data, key, val)
@@ -98,8 +174,12 @@ function doUpdate (component, prevProps, prevState) {
   }
   data['$taroCompReady'] = true
 
-  const dataDiff = diffObjToPath(data, component.$scope.data)
+  const dataDiff = getIsUsingDiff() ? diffObjToPath(data, component.$scope.data) : data
   const __mounted = component.__mounted
+  let snapshot
+  if (__mounted) {
+    snapshot = callGetSnapshotBeforeUpdate(component, prevProps, prevState)
+  }
 
   // 每次 setData 都独立生成一个 callback 数组
   let cbs = []
@@ -128,13 +208,15 @@ function doUpdate (component, prevProps, prevState) {
       }
 
       if (component['$$hasLoopRef']) {
+        Current.current = component
+        Current.index = 0
         component._disableEffect = true
         component._createData(component.state, component.props, true)
         component._disableEffect = false
+        Current.current = null
       }
-
-      if (typeof component.componentDidUpdate === 'function') {
-        component.componentDidUpdate(prevProps, prevState)
+      if (isFunction(component.componentDidUpdate)) {
+        component.componentDidUpdate(prevProps, prevState, snapshot)
       }
     }
 

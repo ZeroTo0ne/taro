@@ -1,14 +1,17 @@
 import * as fs from 'fs-extra'
 import * as path from 'path'
+import { Transform } from 'stream'
 import * as crypto from 'crypto'
 import * as os from 'os'
 import * as child_process from 'child_process'
-import * as chalk from 'chalk'
+
+import chalk from 'chalk'
 import { mergeWith, isPlainObject, camelCase, flatMap } from 'lodash'
 import * as minimatch from 'minimatch'
 import * as t from 'babel-types'
 import * as yauzl from 'yauzl'
-import { Transform } from 'stream'
+import * as findWorkspaceRoot from 'find-yarn-workspace-root'
+import * as chokidar from 'chokidar';
 
 import defaultBabelConfig from '../config/babel'
 import defaultUglifyConfig from '../config/uglify'
@@ -23,7 +26,9 @@ import {
   MINI_APP_FILES,
   BUILD_TYPES,
   CONFIG_MAP,
-  REG_STYLE
+  REG_STYLE,
+  UX_EXT,
+  NODE_MODULES
 } from './constants'
 import { ICopyArgOptions, ICopyOptions, TogglableOptions } from './types'
 import { callPluginSync } from './npm'
@@ -53,7 +58,7 @@ export function replaceAliasPath (filePath: string, name: string, pathAlias: obj
 
   const prefixs = Object.keys(pathAlias)
   if (prefixs.includes(name)) {
-    return promoteRelativePath(path.relative(filePath, fs.realpathSync(pathAlias[name])))
+    return promoteRelativePath(path.relative(filePath, fs.realpathSync(resolveScriptPath(pathAlias[name]))))
   }
   const reg = new RegExp(`^(${prefixs.join('|')})/(.*)`)
   name = name.replace(reg, function (m, $1, $2) {
@@ -198,10 +203,85 @@ export function resolveScriptPath (p: string): string {
   return realPath
 }
 
+export function resolvePureScriptPath (p: string): string {
+  const realPath = p
+  const SCRIPT_EXT = JS_EXT.concat(TS_EXT)
+  for (let i = 0; i < SCRIPT_EXT.length; i++) {
+    const item = SCRIPT_EXT[i]
+    if (fs.existsSync(`${p}${item}`)) {
+      return `${p}${item}`
+    }
+    if (fs.existsSync(`${p}${path.sep}index${item}`)) {
+      return `${p}${path.sep}index${item}`
+    }
+  }
+  return realPath
+}
+
+export function resolveQuickappFilePath (p: string): string {
+  for (let i = 0; i < UX_EXT.length; i++) {
+    const item = UX_EXT[i]
+    if (fs.existsSync(`${p}${item}`)) {
+      return `${p}${item}`
+    }
+    if (fs.existsSync(`${p}${path.sep}index${item}`)) {
+      return `${p}${path.sep}index${item}`
+    }
+  }
+  return p
+}
+
+export function processUxContent (contents, cb) {
+  const reg = /(<script(?:(?=\s)[\s\S]*?["'\s\w\/\-]>|>))([\s\S]*?)(?=<\/script\s*>|$)|(<style(?:(?=\s)[\s\S]*?["'\s\w\/\-]>|>))([\s\S]*?)(?=<\/style\s*>|$)|<(image)\s+[\s\S]*?["'\s\w\/\-](?:>|$)|(<import(?:(?=\s)[\s\S]*?["'\s\w\/\-]>|>))([\s\S]*?)(?=<\/import\s*>|$)/ig;
+  contents = contents.replace(reg, function (m, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10) {
+    if ($1) {
+      $1 = $1.replace(/(\ssrc\s*=\s*)('[^']+'|"[^"]+"|[^\s\/>]+)/ig, function (m, prefix, value) {
+        if (typeof cb === 'function') {
+          value = cb(value)
+        }
+        return prefix + value
+      })
+      m = $1 + $2
+    } else if ($3) {
+      $3 = $3.replace(/(\ssrc\s*=\s*)('[^']+'|"[^"]+"|[^\s\/>]+)/ig, function (m, prefix, value) {
+        if (typeof cb === 'function') {
+          value = cb(value)
+        }
+        return prefix + value
+      })
+      m = $3 + $4
+    } else if ($5) {
+      m = m.replace(/(src\s*=\s*)('[^']+'|"[^"]+"|[^\s\/>]+)/ig, function (m, prefix, value) {
+        if (typeof cb === 'function') {
+          value = cb(value)
+        }
+        return prefix + value
+      })
+    } else if ($6) {
+      $6 = $6.replace(/(\ssrc\s*=\s*)('[^']+'|"[^"]+"|[^\s\/>]+)/ig, function (m, prefix, value) {
+        if (typeof cb === 'function') {
+          value = cb(value)
+        }
+        return prefix + value
+      })
+      m = $6 + $7
+    }
+    return m
+  })
+  return contents
+}
+
 export function resolveStylePath (p: string): string {
   const realPath = p
+  const removeExtPath = p.replace(path.extname(p), '')
+  const taroEnv = process.env.TARO_ENV
   for (let i = 0; i < CSS_EXT.length; i++) {
     const item = CSS_EXT[i]
+    if (taroEnv) {
+      if (fs.existsSync(`${removeExtPath}.${taroEnv}${item}`)) {
+        return `${removeExtPath}.${taroEnv}${item}`
+      }
+    }
     if (fs.existsSync(`${p}${item}`)) {
       return `${p}${item}`
     }
@@ -371,7 +451,8 @@ export function emptyDirectory (dirPath: string, opts: { excludes: string[] } = 
 
 export function recursiveFindNodeModules (filePath: string): string {
   const dirname = path.dirname(filePath)
-  const nodeModules = path.join(dirname, 'node_modules')
+  const workspaceRoot = findWorkspaceRoot(dirname)
+  const nodeModules = path.join(workspaceRoot || dirname, 'node_modules')
   if (fs.existsSync(nodeModules)) {
     return nodeModules
   }
@@ -390,6 +471,30 @@ export function getInstalledNpmPkgPath (pkgName: string, basedir: string): strin
   }
 }
 
+export async function checkCliAndFrameworkVersion (appPath, buildAdapter) {
+  const pkgVersion = getPkgVersion()
+  const frameworkName = `@tarojs/taro-${buildAdapter}`
+  const nodeModulesPath = recursiveFindNodeModules(path.join(appPath, NODE_MODULES))
+  const frameworkVersion = getInstalledNpmPkgVersion(frameworkName, nodeModulesPath)
+  if (frameworkVersion) {
+    if (frameworkVersion !== pkgVersion) {
+      const taroCliPath = path.join(getRootPath(), 'package.json')
+      const frameworkPath = path.join(nodeModulesPath, frameworkName, 'package.json')
+      printLog(processTypeEnum.ERROR, '版本问题', `Taro CLI 与本地安装运行时框架 ${frameworkName} 版本不一致, 请确保版本一致！`)
+      printLog(processTypeEnum.REMIND, '升级命令', `升级到最新CLI：taro update self   升级到最新依赖库：taro update project`);
+      printLog(processTypeEnum.REMIND, '升级文档', `请参考 "常用 CLI 命令"中"更新" 章节：https://taro-docs.jd.com/taro/docs/GETTING-STARTED.html`);
+      console.log(``)
+      console.log(`Taro CLI：${getPkgVersion()}             路径：${taroCliPath}`)
+      console.log(`${frameworkName}：${frameworkVersion}   路径：${frameworkPath}`)
+      console.log(``)
+      process.exit(1)
+    }
+  } else {
+    printLog(processTypeEnum.WARNING, '依赖安装', chalk.red(`项目依赖 ${frameworkName} 未安装，或安装有误，请重新安装此依赖！`))
+    process.exit(1)
+  }
+}
+
 export function getInstalledNpmPkgVersion (pkgName: string, basedir: string): string | null {
   const pkgPath = getInstalledNpmPkgPath(pkgName, basedir)
   if (!pkgPath) {
@@ -398,7 +503,7 @@ export function getInstalledNpmPkgVersion (pkgName: string, basedir: string): st
   return fs.readJSONSync(pkgPath).version
 }
 
-export function traverseObjectNode (node, buildAdapter: string) {
+export function traverseObjectNode (node, buildAdapter: string, parentKey?: string) {
   if (node.type === 'ClassProperty' || node.type === 'ObjectProperty') {
     const properties = node.value.properties
     const obj = {}
@@ -407,10 +512,10 @@ export function traverseObjectNode (node, buildAdapter: string) {
       if (CONFIG_MAP[buildAdapter][key] === false) {
         return
       }
-      if (CONFIG_MAP[buildAdapter][key]) {
+      if (parentKey !== 'usingComponents' && CONFIG_MAP[buildAdapter][key]) {
         key = CONFIG_MAP[buildAdapter][key]
       }
-      obj[key] = traverseObjectNode(p.value, buildAdapter)
+      obj[key] = traverseObjectNode(p.value, buildAdapter, key)
     })
     return obj
   }
@@ -422,10 +527,10 @@ export function traverseObjectNode (node, buildAdapter: string) {
       if (CONFIG_MAP[buildAdapter][key] === false) {
         return
       }
-      if (CONFIG_MAP[buildAdapter][key]) {
+      if (parentKey !== 'usingComponents' && CONFIG_MAP[buildAdapter][key]) {
         key = CONFIG_MAP[buildAdapter][key]
       }
-      obj[key] = traverseObjectNode(p.value, buildAdapter)
+      obj[key] = traverseObjectNode(p.value, buildAdapter, key)
     })
     return obj
   }
@@ -480,6 +585,15 @@ export function copyFiles (appPath: string, copyConfig: ICopyOptions | void) {
             }
           }
           copyFileSync(from, to, copyOptions)
+	        if (pattern.watch){
+		        const watcher = chokidar.watch(from,{
+			        persistent: true,
+			        ignoreInitial: true
+		        })
+		        watcher.on('change',(res) => {
+			        copyFileSync(from, to, copyOptions);
+		        })
+	        }
         } else {
           printLog(processTypeEnum.ERROR, '拷贝失败', `${pattern.from} 文件不存在！`)
         }
@@ -488,8 +602,18 @@ export function copyFiles (appPath: string, copyConfig: ICopyOptions | void) {
   }
 }
 
-export function isQuickAppPkg (name: string): boolean {
-  return /@system\./.test(name)
+export function isQuickappPkg (name: string, quickappPkgs: any[] = []): boolean {
+  const isQuickappPkg = /^@(system|service)\.[a-zA-Z]{1,}/.test(name)
+  let hasSetInManifest = false
+  quickappPkgs.forEach(item => {
+    if (item.name === name.replace(/^@/, '')) {
+      hasSetInManifest = true
+    }
+  })
+  if (isQuickappPkg && !hasSetInManifest) {
+    printLog(processTypeEnum.ERROR, '快应用', `需要在 ${chalk.bold('project.quickapp.json')} 文件的 ${chalk.bold('features')} 配置中添加 ${chalk.bold(name)}`)
+  }
+  return isQuickappPkg
 }
 
 export function generateQuickAppUx ({
@@ -654,4 +778,86 @@ export function uglifyJS (resCode: string, filePath: string, root: string, uglif
     return uglifyResult.code
   }
   return resCode
+}
+
+export const getAllFilesInFloder = async (
+  floder: string,
+  filter: string[] = []
+): Promise<string[]> => {
+  let files: string[] = []
+  const list = readDirWithFileTypes(floder)
+
+  await Promise.all(
+    list.map(async item => {
+      const itemPath = path.join(floder, item.name)
+      if (item.isDirectory) {
+        const _files = await getAllFilesInFloder(itemPath, filter)
+        files = [...files, ..._files]
+      } else if (item.isFile) {
+        if (!filter.find(rule => rule === item.name)) files.push(itemPath)
+      }
+    })
+  )
+
+  return files
+}
+
+export function getUserHomeDir (): string {
+  function homedir(): string {
+    const env = process.env
+    const home = env.HOME
+    const user = env.LOGNAME || env.USER || env.LNAME || env.USERNAME
+
+    if (process.platform === 'win32') {
+      return env.USERPROFILE || '' + env.HOMEDRIVE + env.HOMEPATH || home || ''
+    }
+
+    if (process.platform === 'darwin') {
+      return home || (user ? '/Users/' + user : '')
+    }
+
+    if (process.platform === 'linux') {
+      return home || (process.getuid() === 0 ? '/root' : (user ? '/home/' + user : ''))
+    }
+
+    return home || ''
+  }
+  return typeof (os.homedir as (() => string) | undefined) === 'function' ? os.homedir() : homedir()
+}
+
+export type TemplateSourceType = 'git' | 'url'
+
+export function getTemplateSourceType (url: string): TemplateSourceType {
+  if (/^github:/.test(url) || /^gitlab:/.test(url) || /^direct:/.test(url)) {
+    return 'git'
+  } else {
+    return 'url'
+  }
+}
+
+interface FileStat {
+  name: string
+  isDirectory: boolean
+  isFile: boolean
+}
+
+export function readDirWithFileTypes (floder: string): FileStat[] {
+  const list = fs.readdirSync(floder)
+  const res = list.map(name => {
+    const stat =fs.statSync(path.join(floder, name))
+    return {
+      name,
+      isDirectory: stat.isDirectory(),
+      isFile: stat.isFile()
+    }
+  })
+  return res
+}
+
+export function extnameExpRegOf (filePath: string): RegExp {
+  return new RegExp(`${path.extname(filePath)}$`)
+}
+
+export function generateAlipayPath (filePath) {
+  return filePath.replace(/@/g, '_')
 }

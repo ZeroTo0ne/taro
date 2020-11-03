@@ -2,6 +2,7 @@
  * Video组件的样式参考了[uni-app](https://github.com/dcloudio/uni-app/tree/master/packages/uni-h5)的实现
  */
 
+import Taro from '@tarojs/taro-h5'
 import Nerv, { Component, createPortal } from 'nervjs'
 import classnames from 'classnames'
 import Danmu from './danmu'
@@ -82,9 +83,6 @@ class Video extends Component {
     vslideGesture: false,
     vslideGestureInFullscreen: true
   }
-
-  /** @type {VideoProps} */
-  props
 
   /** @type {HTMLVideoElement} */
   videoRef
@@ -214,6 +212,7 @@ class Video extends Component {
       duration: this.videoRef.duration
     })
     this.duration = this.videoRef.duration
+    if (this.props.poster) return
     if (this.state.isFirst) {
       this.seek(this.props.initialTime)
     }
@@ -411,6 +410,12 @@ class Video extends Component {
   componentDidMount () {
     this.unbindTouchEvents = this.bindTouchEvents()
     this.sendDanmu(this.props.danmuList)
+
+    Taro.eventCenter.on('__taroRouterChange', () => {
+      if (this.state.isPlaying) {
+        this.stop()
+      }
+    })
   }
 
   componentWillReceiveProps (nProps) {
@@ -427,6 +432,7 @@ class Video extends Component {
       src,
       autoplay,
       className,
+      style,
       id,
       initialTime,
       loop,
@@ -443,7 +449,7 @@ class Video extends Component {
       danmuBtn
     } = this.props
     const { enableDanmu, isFirst, isMute, isFullScreen } = this.state
-    const duration = formatTime(this.state.duration)
+    const duration = formatTime(this.props.duration || this.state.duration || null)
 
     const videoProps = {
       id,
@@ -454,6 +460,7 @@ class Video extends Component {
       muted,
       start: initialTime,
       className: classnames('taro-video-video', className),
+      style: Object.assign({ objectFit }, style),
       ref: this.getVideoRef,
       playsinline: true,
       'webkit-playsinline': true,
@@ -467,7 +474,6 @@ class Video extends Component {
       onError: this.onError,
       onDurationChange: this.onLoadedMetadata
     }
-
     const videoNode = (
       <div
         className={classnames('taro-video-container', {
@@ -477,7 +483,18 @@ class Video extends Component {
         onTouchStart={this.onTouchStartContainer}
         onClick={this.onClickContainer}>
         <video {...videoProps}>暂时不支持播放该视频</video>
-        <Controls controls={controls} currentTime={this.currentTime} duration={this.state.duration} isPlaying={this.state.isPlaying} pauseFunc={this.pause} playFunc={this.play} seekFunc={this.seek} showPlayBtn={showPlayBtn} showProgress={showProgress} ref={this.getControlsRef}>
+        <Controls
+          controls={controls}
+          currentTime={this.currentTime}
+          duration={this.props.duration || this.state.duration || null}
+          isPlaying={this.state.isPlaying}
+          pauseFunc={this.pause}
+          playFunc={this.play}
+          seekFunc={this.seek}
+          showPlayBtn={showPlayBtn}
+          showProgress={showProgress}
+          ref={this.getControlsRef}
+        >
           {showMuteBtn && (
             <div
               className={classnames('taro-video-mute', {
@@ -529,7 +546,7 @@ class Video extends Component {
         </div>
       </div>
     )
-    return this.state.isFullScreen ? createPortal(videoNode, document.body) : <div className='taro-video'>{videoNode}</div>
+    return this.state.isFullScreen ? createPortal(videoNode, document.body) : <div className='taro-video' style={this.props.style}>{videoNode}</div>
   }
 }
 

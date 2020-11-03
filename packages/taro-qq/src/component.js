@@ -1,8 +1,9 @@
 import { enqueueRender } from './render-queue'
 import { updateComponent } from './lifecycle'
-import { isFunction } from './util'
+import { isFunction, genCompPrefix } from './util'
 import {
-  internal_safe_get as safeGet
+  internal_safe_get as safeGet,
+  internal_force_update as forceUpdateCallback
 } from '@tarojs/taro'
 import { cacheDataSet, cacheDataGet } from './data-cache'
 // #组件state对应小程序组件data
@@ -43,6 +44,7 @@ class BaseComponent {
     this.state = {}
     this.props = props
     this.$componentType = isPage ? 'PAGE' : 'COMPONENT'
+    this.$prefix = genCompPrefix()
     this.isTaroComponent = this.$componentType && this.$router && this._pendingStates
   }
   _constructor (props) {
@@ -59,7 +61,7 @@ class BaseComponent {
       (this._pendingCallbacks = this._pendingCallbacks || []).push(callback)
     }
     if (!this._disable) {
-      enqueueRender(this)
+      enqueueRender(this, callback === forceUpdateCallback)
     }
   }
 

@@ -647,6 +647,29 @@ describe('Template', () => {
       )
     })
 
+    test('第三方组件事件首字母小写 preval', () => {
+      const { template } = transform({
+        ...baseOptions,
+        code: buildComponent(
+          `
+          const { list } = this.state
+          return (
+            <ec-chart onChange={this.handleChange} />
+          )
+          `,
+          `config = { usingComponents: preval\` module.exports= { 'ec-chart': '../path' } \` }`
+        )
+      })
+
+      expect(template).toMatch(
+        prettyPrint(`
+        <block>
+            <ec-chart bindchange="handleChange"></ec-chart>
+        </block>
+      `)
+      )
+    })
+
     test('第三方组件事件首字母小写 2', () => {
       const { template } = transform({
         ...baseOptions,
@@ -914,6 +937,28 @@ describe('字符不转义', () => {
       let inst = evalClass(ast)
       expect(Object.keys(inst.state).length).toBe(1)
       expect(inst.state.anonymousState__temp).toEqual('')
+    })
+  })
+
+  describe('ObjectExpression property key', () => {
+    test('StringLiteral', () => {
+      const { template, ast, code } = transform({
+        ...baseOptions,
+        isRoot: true,
+        code: buildComponent(`
+          return {
+              'weapp': (
+                  <View>weapp</View>
+              ),
+              'h5': (
+                  <View>h5</View>
+              )
+          }[process.env.TARO_ENV]
+        `)
+      })
+
+      const inst = evalClass(ast, '', true);
+      expect(template).toMatch(`'weapp' === 'weapp'`);
     })
   })
 })

@@ -64,20 +64,62 @@ csso: {
 
 ### plugins.sass
 用来配置 `sass` 工具，设置打包过程中的 SCSS 代码编译。  
-具体配置可以参考[dart-sass](https://www.npmjs.com/package/dart-sass)  
-v1.2.23改为用[dart-sass](https://www.npmjs.com/package/dart-sass)作编译工具  
-v1.2.23前使用[node-sass](https://www.npmjs.com/package/node-sass)作编译工具  
-当需要全局注入scss文件时，可以添加两个额外参数：`resource` 、 `projectDirectory` (v1.2.25开始支持)，具体配置方式如下：
-```jsx
+具体配置可以参考[node-sass](https://www.npmjs.com/package/node-sass)  
+当需要全局注入scss文件时，可以添加三个额外参数：`resource` 、 `projectDirectory` (v1.2.25开始支持)、`data`（v1.3.0开始支持），具体配置方式如下：
+
+#### 单文件路径形式
+
+当只有 `resource` 字段时，可以传入 scss 文件的绝对路径。
+
+```js
 sass: {
-    resource: path.resolve(__dirname, '..', 'src/styles/variable.scss'),
-    // OR 
-    // resource:  ['path/to/global.variable.scss', 'path/to/global.mixin.scss']
-    projectDirectory: path.resolve(__dirname, '..')
-  }
+  resource: path.resolve(__dirname, '..', 'src/styles/variable.scss')
+}
 ```
-resource: 如果要引入多个文件，支持数组形式传入。  
-projectDirectory: 项目根目录的绝对地址(若为小程序云开发模板，则应该是client目录)。
+
+#### 多文件路径形式
+
+此外，当只有 `resource` 字段时，也可以传入一个路径数组。
+
+```js
+sass: {
+  resource: [
+    path.resolve(__dirname, '..', 'src/styles/variable.scss'),
+    path.resolve(__dirname, '..', 'src/styles/mixins.scss')
+  ]
+}
+```
+
+#### 指定项目根目录路径形式
+
+你可以额外配置 `projectDirectory` 字段，这样你就可以在 `resource` 里写相对路径了。
+
+```js
+sass: {
+  resource: [
+    'src/styles/variable.scss',
+    'src/styles/mixins.scss'
+  ],
+  projectDirectory: path.resolve(__dirname, '..')
+}
+```
+
+#### 传入 scss 变量字符串
+
+```js
+sass: {
+  resource: [
+    'src/styles/variable.scss',
+    'src/styles/mixins.scss'
+  ],
+  projectDirectory: path.resolve(__dirname, '..'),
+  data: '$nav-height: 48px;'
+}
+```
+
+* resource: 如果要引入多个文件，支持数组形式传入
+* projectDirectory: 项目根目录的绝对地址(若为小程序云开发模板，则应该是client目录)
+* data: 全局 scss 变量，若 data 与 resource 中设置了同样的变量，则 data 的优先级高于 resource
 
 ## env
 
@@ -460,29 +502,8 @@ Taro app 的入口，同 [webpack.entry](https://webpack.js.org/configuration/en
 sourceMap 开关，影响 js、css 的 sourceMap 配置。
 dev 状态默认 **开**，prod 状态默认 **关**。
 
-### h5.enableDll
-
-dll 开关，开启后将使用 `dllPlugin` 把内置的部分依赖库打包为单独的 dll 文件，
-某种程度上可以减少首屏单个文件体积。
-dev 状态默认 **关**，prod 状态默认 **开**。
-
-### h5.dllWebpackChain
-
-同 `h5.webpackChain`，不过作用于 dll。
-
-### h5.dllEntry
-
-dll编译过程的 `entry` 配置项，决定了 dll 文件的内容，可参考 [webpack.entry](https://webpack.js.org/configuration/entry-context/#entry)。默认值：
-
-```js
-h5: {
-  /* 其他配置 */
-  ...,
-  dllEntry: {
-    lib: ['nervjs', '@tarojs/taro-h5', '@tarojs/router', '@tarojs/components']
-  }
-}
-```
+### h5.sourceMapType
+sourceMap格式, 默认cheap-module-eval-source-map。[具体配置](https://webpack.js.org/configuration/devtool/#devtool)
 
 ### h5.enableExtract
 
@@ -585,6 +606,23 @@ stylus-loader 的附加配置。配置项参考[官方文档](https://github.com
   miniCssExtractPluginOption: {
     filename: 'css/[name].css',
     chunkFilename: 'css/[id].css'
+  }
+}
+```
+
+### h5.miniCssExtractLoaderOption
+
+`mini-css-extract-plugin` 的loader配置，在 `enableExtract` 为 `true` 的情况下生效。与 `miniCssExtractPluginOption` 选项配合使用。
+可以配置对应的loader config，配置项参考[官方文档](https://github.com/webpack-contrib/mini-css-extract-plugin)，例如：
+
+```jsx
+{
+  miniCssExtractPluginOption: {
+    filename: 'css/[name].css',
+    chunkFilename: 'css/[id].css'
+  },
+  miniCssExtractLoaderOption: {
+    publicPath: '../'
   }
 }
 ```

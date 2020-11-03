@@ -21,7 +21,9 @@ import {
   promoteRelativePath,
   isDifferentArray,
   generateQuickAppUx,
-  uglifyJS
+  uglifyJS,
+  extnameExpRegOf,
+  generateAlipayPath
 } from '../util'
 
 import { parseComponentExportAst, parseAst } from './astProcess'
@@ -34,7 +36,6 @@ import {
   getComponentExportsMap,
   getRealComponentsPathList,
   copyFilesFromSrcToOutput,
-  getComponentsBuildResult,
   getDependencyTree,
   buildUsingComponents,
   getDepComponents,
@@ -46,6 +47,7 @@ import { transfromNativeComponents, processNativeWxml } from './native'
 
 const notTaroComponents = new Set<string>()
 const componentsNamedMap = new Map<string, { name?: string, type?: string }>()
+const componentsBuildResult = new Map<string, IBuildResult>()
 
 export function getComponentsNamedMap () {
   return componentsNamedMap
@@ -58,49 +60,29 @@ export function isFileToBeTaroComponent (
 ) {
   const {
     buildAdapter,
+    sourceDir,
     constantsReplaceList,
-    jsxAttributeNameReplace
+    jsxAttributeNameReplace,
+    alias
   } = getBuildData()
   const transformResult: IWxTransformResult = wxTransformer({
     code,
     sourcePath: sourcePath,
+    sourceDir,
     outputPath: outputPath,
     isNormal: true,
     isTyped: REG_TYPESCRIPT.test(sourcePath),
     adapter: buildAdapter,
     env: constantsReplaceList,
-    jsxAttributeNameReplace
+    jsxAttributeNameReplace,
+    alias
   })
   const { ast }: IWxTransformResult = transformResult
   let isTaroComponent = false
 
   traverse(ast, {
-    ClassDeclaration (astPath) {
-      astPath.traverse({
-        ClassMethod (astPath) {
-          if (astPath.get('key').isIdentifier({ name: 'render' })) {
-            astPath.traverse({
-              JSXElement () {
-                isTaroComponent = true
-              }
-            })
-          }
-        }
-      })
-    },
-
-    ClassExpression (astPath) {
-      astPath.traverse({
-        ClassMethod (astPath) {
-          if (astPath.get('key').isIdentifier({ name: 'render' })) {
-            astPath.traverse({
-              JSXElement () {
-                isTaroComponent = true
-              }
-            })
-          }
-        }
-      })
+    JSXElement () {
+      isTaroComponent = true
     }
   })
 
@@ -127,10 +109,7 @@ export async function buildSingleComponent (
   componentObj: IComponentObj,
   buildConfig: IComponentBuildConfig = {}
 ): Promise<IBuildResult> {
-  const componentsBuildResult = getComponentsBuildResult()
-  if (isComponentHasBeenBuilt(componentObj.path as string) && componentsBuildResult.get(componentObj.path as string)) {
-    return componentsBuildResult.get(componentObj.path as string) as IBuildResult
-  }
+
   const {
     appPath,
     buildAdapter,
@@ -144,7 +123,8 @@ export async function buildSingleComponent (
     outputFilesTypes,
     isProduction,
     jsxAttributeNameReplace,
-    projectConfig
+    projectConfig,
+    alias
   } = getBuildData()
   const isQuickApp = buildAdapter === BUILD_TYPES.QUICKAPP
 
@@ -165,6 +145,9 @@ export async function buildSingleComponent (
   }
   let componentShowPath = component.replace(appPath + path.sep, '')
   componentShowPath = componentShowPath.split(path.sep).join('/')
+  if (buildAdapter === BUILD_TYPES.ALIPAY) {
+    componentShowPath = generateAlipayPath(componentShowPath)
+  }
   let isComponentFromNodeModules = false
   let sourceDirPath = sourceDir
   let buildOutputDir = outputDir
@@ -175,16 +158,17 @@ export async function buildSingleComponent (
     buildOutputDir = npmOutputDir
   }
   let outputComponentShowPath = componentShowPath.replace(isComponentFromNodeModules ? NODE_MODULES : sourceDirName, buildConfig.outputDirName || outputDirName)
-  outputComponentShowPath = outputComponentShowPath.replace(path.extname(outputComponentShowPath), '')
+  outputComponentShowPath = outputComponentShowPath.replace(extnameExpRegOf(outputComponentShowPath), '')
   printLog(processTypeEnum.COMPILE, '组件文件', componentShowPath)
   const componentContent = fs.readFileSync(component).toString()
-  const outputComponentJSPath = component.replace(sourceDirPath, buildConfig.outputDir || buildOutputDir).replace(path.extname(component), outputFilesTypes.SCRIPT)
-  const outputComponentWXMLPath = outputComponentJSPath.replace(path.extname(outputComponentJSPath), outputFilesTypes.TEMPL)
-  const outputComponentWXSSPath = outputComponentJSPath.replace(path.extname(outputComponentJSPath), outputFilesTypes.STYLE)
-  const outputComponentJSONPath = outputComponentJSPath.replace(path.extname(outputComponentJSPath), outputFilesTypes.CONFIG)
-  if (!isComponentHasBeenBuilt(component)) {
-    setHasBeenBuiltComponents(component)
+  let outputComponentJSPath = component.replace(sourceDirPath, buildConfig.outputDir || buildOutputDir).replace(extnameExpRegOf(component), outputFilesTypes.SCRIPT)
+  if (buildAdapter === BUILD_TYPES.ALIPAY) {
+    outputComponentJSPath = generateAlipayPath(outputComponentJSPath)
   }
+  const outputComponentWXMLPath = outputComponentJSPath.replace(extnameExpRegOf(outputComponentJSPath), outputFilesTypes.TEMPL)
+  const outputComponentWXSSPath = outputComponentJSPath.replace(extnameExpRegOf(outputComponentJSPath), outputFilesTypes.STYLE)
+  const outputComponentJSONPath = outputComponentJSPath.replace(extnameExpRegOf(outputComponentJSPath), outputFilesTypes.CONFIG)
+
   try {
     const isTaroComponentRes = isFileToBeTaroComponent(componentContent, component, outputComponentJSPath)
     const componentExportsMap = getComponentExportsMap()
@@ -215,22 +199,36 @@ export async function buildSingleComponent (
       }
       return await buildSingleComponent(realComponentObj, buildConfig)
     }
+    if (isComponentHasBeenBuilt(componentObj.path as string) && componentsBuildResult.get(componentObj.path as string)) {
+      return componentsBuildResult.get(componentObj.path as string) as IBuildResult
+    }
+    const buildResult = {
+      js: outputComponentJSPath,
+      wxss: outputComponentWXSSPath,
+      wxml: outputComponentWXMLPath
+    }
+    componentsBuildResult.set(component, buildResult)
     const transformResult: IWxTransformResult = wxTransformer({
       code: componentContent,
       sourcePath: component,
+      sourceDir,
       outputPath: outputComponentJSPath,
       isRoot: false,
       isTyped: REG_TYPESCRIPT.test(component),
       isNormal: false,
       adapter: buildAdapter,
       env: constantsReplaceList,
-      jsxAttributeNameReplace
+      jsxAttributeNameReplace,
+      alias
     })
     const componentWXMLContent = isProduction ? transformResult.compressedTemplate : transformResult.template
     const componentDepComponents = transformResult.components
     const res = parseAst(PARSE_AST_TYPE.COMPONENT, transformResult.ast, componentDepComponents, component, outputComponentJSPath, buildConfig.npmSkip)
     let resCode = res.code
     fs.ensureDirSync(path.dirname(outputComponentJSPath))
+    if (!isComponentHasBeenBuilt(component)) {
+      setHasBeenBuiltComponents(component)
+    }
     // 解析原生组件
     const { usingComponents = {} }: IConfig = res.configObj
     if (usingComponents && !isEmptyObject(usingComponents)) {
@@ -244,27 +242,45 @@ export async function buildSingleComponent (
       })
       transfromNativeComponents(outputComponentJSONPath.replace(buildConfig.outputDir || buildOutputDir, sourceDirPath), res.configObj)
     }
+    let realComponentsPathList: IComponentObj[] = []
+    realComponentsPathList = getRealComponentsPathList(component, componentDepComponents)
+
     if (!isQuickApp) {
       resCode = await compileScriptFile(resCode, component, outputComponentJSPath, buildAdapter)
       if (isProduction) {
-        uglifyJS(resCode, component, appPath, projectConfig!.plugins!.uglify as TogglableOptions)
+        resCode = uglifyJS(resCode, component, appPath, projectConfig!.plugins!.uglify as TogglableOptions)
       }
     } else {
       // 快应用编译，搜集创建组件 ux 文件
       const importTaroSelfComponents = getImportTaroSelfComponents(outputComponentJSPath, res.taroSelfComponents)
-      const importCustomComponents = new Set(componentDepComponents.map(item => {
-        delete item.type
-        return item
+      const importCustomComponents = new Set(realComponentsPathList.map(item => {
+        return {
+          path: promoteRelativePath(path.relative(component, item.path as string)).replace(extnameExpRegOf(item.path as string), ''),
+          name: item.name as string
+        }
       }))
-      const styleRelativePath = promoteRelativePath(path.relative(outputComponentJSPath, outputComponentWXSSPath))
+      const usingComponents = res.configObj.usingComponents
+      let importUsingComponent: any = new Set([])
+      if (usingComponents) {
+        importUsingComponent = new Set(Object.keys(usingComponents).map(item => {
+          return {
+            name: item,
+            path: usingComponents[item]
+          }
+        }))
+      }
+      let styleRelativePath
+      if (res.styleFiles.length) {
+        styleRelativePath = promoteRelativePath(path.relative(outputComponentJSPath, outputComponentWXSSPath))
+      }
       const uxTxt = generateQuickAppUx({
         script: resCode,
         style: styleRelativePath,
-        imports: new Set([...importTaroSelfComponents, ...importCustomComponents]),
+        imports: new Set([...importTaroSelfComponents, ...importCustomComponents, ...importUsingComponent]),
         template: componentWXMLContent
       })
       fs.writeFileSync(outputComponentWXMLPath, uxTxt)
-      printLog(processTypeEnum.GENERATE, '组件文件', `${outputDirName}/${componentObj.name}${outputFilesTypes.TEMPL}`)
+      printLog(processTypeEnum.GENERATE, '组件文件', `${outputComponentShowPath}${outputFilesTypes.TEMPL}`)
     }
 
     const dependencyTree = getDependencyTree()
@@ -275,9 +291,7 @@ export async function buildSingleComponent (
       media: []
     }
     // 编译依赖的组件文件
-    let realComponentsPathList: IComponentObj[] = []
-    if (componentDepComponents.length) {
-      realComponentsPathList = getRealComponentsPathList(component, componentDepComponents)
+    if (realComponentsPathList.length) {
       res.scriptFiles = res.scriptFiles.map(item => {
         for (let i = 0; i < realComponentsPathList.length; i++) {
           const componentObj = realComponentsPathList[i]
@@ -289,7 +303,7 @@ export async function buildSingleComponent (
         return item
       }).filter(item => item)
       realComponentsPathList = realComponentsPathList.filter(item => !isComponentHasBeenBuilt(item.path as string) || notTaroComponents.has(item.path as string))
-      await buildDepComponents(realComponentsPathList)
+      await buildDepComponents(realComponentsPathList, buildConfig)
     }
     if (componentExportsMap.size && realComponentsPathList.length) {
       realComponentsPathList.forEach(componentObj => {
@@ -306,7 +320,7 @@ export async function buildSingleComponent (
                 } else {
                   realPath = promoteRelativePath(path.relative(component, (componentPath as string)))
                 }
-                depComponent.path = realPath.replace(path.extname(realPath), '')
+                depComponent.path = realPath.replace(extnameExpRegOf(realPath), '')
               }
             })
           })
@@ -345,15 +359,13 @@ export async function buildSingleComponent (
     fileDep['media'] = res.mediaFiles
     dependencyTree.set(component, fileDep)
     depComponents.set(component, componentDepComponents)
-    const buildResult = {
-      js: outputComponentJSPath,
-      wxss: outputComponentWXSSPath,
-      wxml: outputComponentWXMLPath
-    }
-    componentsBuildResult.set(component, buildResult)
+
     return buildResult
   } catch (err) {
     printLog(processTypeEnum.ERROR, '组件编译', `组件${componentShowPath}编译失败！`)
+    if (!isComponentHasBeenBuilt(component)) {
+      setHasBeenBuiltComponents(component)
+    }
     console.log(err)
     return {
       js: '',

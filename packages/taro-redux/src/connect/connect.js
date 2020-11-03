@@ -1,19 +1,5 @@
-import { shallowEqual } from '@tarojs/utils'
-
 import { getStore } from '../utils/store'
 import { mergeObjects, isObject } from '../utils'
-
-function isEqual (a, b) {
-  const typeA = typeof a
-  const typeB = typeof b
-  if (typeA !== typeB) {
-    return false
-  }
-  if (typeA === 'object') {
-    return shallowEqual(a, b)
-  }
-  return a === b
-}
 
 function wrapPropsWithDispatch (mapDispatchToProps, dispatch) {
   if (typeof mapDispatchToProps === 'function') {
@@ -49,7 +35,7 @@ export default function connect (mapStateToProps, mapDispatchToProps) {
       if (isObject(val) && isObject(initMapDispatch[key])) {
         val = mergeObjects(val, initMapDispatch[key])
       }
-      if (!isEqual(this.props[key], val)) {
+      if (this.props[key] !== val) {
         this.props[key] = val
         isChanged = true
       }
@@ -71,6 +57,7 @@ export default function connect (mapStateToProps, mapDispatchToProps) {
     })
 
     let unSubscribe = null
+
     return class Connect extends Component {
       constructor (props, isPage) {
         super(Object.assign(...arguments, mergeObjects(mapStateToProps(store.getState(), props), initMapDispatch)), isPage)
@@ -79,12 +66,18 @@ export default function connect (mapStateToProps, mapDispatchToProps) {
         })
       }
 
-      componentWillMount () {
+      _constructor () {
+        if (!this.$scope) {
+          if (super._constructor) {
+            super._constructor(this.props)
+          }
+          return
+        }
         const store = getStore()
         Object.assign(this.props, mergeObjects(mapStateToProps(store.getState(), this.props), initMapDispatch))
         unSubscribe = store.subscribe(stateListener.bind(this))
-        if (super.componentWillMount) {
-          super.componentWillMount()
+        if (super._constructor) {
+          super._constructor(this.props)
         }
       }
 

@@ -1,8 +1,9 @@
 import { getCurrentPageUrl } from '@tarojs/utils'
-import { commitAttachRef, detachAllRef, Current } from '@tarojs/taro'
-import { isEmptyObject, isFunction } from './util'
-import { updateComponent } from './lifecycle'
+import { commitAttachRef, detachAllRef, Current, eventCenter } from '@tarojs/taro'
+import { isEmptyObject, isFunction, isArray } from './util'
+import { mountComponent, updateComponent } from './lifecycle'
 import { cacheDataSet, cacheDataGet, cacheDataHas } from './data-cache'
+import nextTick from './next-tick'
 import propsManager from './propsManager'
 
 const anonymousFnNamePreffix = 'funPrivate'
@@ -10,7 +11,7 @@ const routerParamsPrivateKey = '__key_'
 const preloadPrivateKey = '__preload_'
 const PRELOAD_DATA_KEY = 'preload'
 const preloadInitedComponent = '$preloadComponent'
-const pageExtraFns = ['onPullDownRefresh', 'onReachBottom', 'onShareAppMessage', 'onPageScroll', 'onTabItemTap', 'onResize']
+const pageExtraFns = ['onPullDownRefresh', 'onReachBottom', 'onShareAppMessage', 'onPageScroll', 'onTabItemTap', 'onResize', 'onShareTimeline']
 
 function bindProperties (weappComponentConf, ComponentClass, isPage) {
   weappComponentConf.properties = {}
@@ -36,8 +37,39 @@ function bindProperties (weappComponentConf, ComponentClass, isPage) {
   weappComponentConf.properties.compid = {
     type: null,
     value: null,
-    observer () {
+    observer (newVal, oldVal) {
       initComponent.apply(this, [ComponentClass, isPage])
+      if (oldVal && oldVal !== newVal) {
+        const { extraProps } = this.data
+        const component = this.$component
+        propsManager.observers[newVal] = {
+          component,
+          ComponentClass: component.constructor
+        }
+        const nextProps = filterProps(component.constructor.defaultProps, propsManager.map[newVal], component.props, extraProps || null)
+        this.$component.props = nextProps
+        nextTick(() => {
+          this.$component._unsafeCallUpdate = true
+          updateComponent(this.$component)
+          this.$component._unsafeCallUpdate = false
+        })
+      }
+    }
+  }
+  weappComponentConf.properties.extraProps = {
+    type: null,
+    value: null,
+    observer () {
+      // update Component
+      if (!this.$component || !this.$component.__isReady) return
+
+      const nextProps = filterProps(ComponentClass.defaultProps, {}, this.$component.props, this.data.extraProps)
+      this.$component.props = nextProps
+      nextTick(() => {
+        this.$component._unsafeCallUpdate = true
+        updateComponent(this.$component)
+        this.$component._unsafeCallUpdate = false
+      })
     }
   }
 }
@@ -172,7 +204,7 @@ function bindEvents (weappComponentConf, events, isPage) {
   })
 }
 
-export function filterProps (defaultProps = {}, propsFromPropsManager = {}, curAllProps = {}) {
+export function filterProps (defaultProps = {}, propsFromPropsManager = {}, curAllProps = {}, extraProps) {
   let newProps = Object.assign({}, curAllProps, propsFromPropsManager)
 
   if (!isEmptyObject(defaultProps)) {
@@ -182,6 +214,11 @@ export function filterProps (defaultProps = {}, propsFromPropsManager = {}, curA
       }
     }
   }
+
+  if (extraProps) {
+    newProps = Object.assign({}, newProps, extraProps)
+  }
+
   return newProps
 }
 
@@ -213,6 +250,14 @@ export function componentTrigger (component, key, args) {
       })
       component.refs = Object.assign({}, component.refs || {}, refs)
     }
+    if (component['$$hasLoopRef']) {
+      Current.current = component
+      Current.index = 0
+      component._disableEffect = true
+      component._createData(component.state, component.props, true)
+      component._disableEffect = false
+      Current.current = null
+    }
   }
 
   if (key === 'componentWillUnmount') {
@@ -220,6 +265,7 @@ export function componentTrigger (component, key, args) {
     if (compid) propsManager.delete(compid)
   }
 
+  // eslint-disable-next-line no-useless-call
   component[key] && typeof component[key] === 'function' && component[key].call(component, ...args)
   if (key === 'componentWillMount') {
     component._dirty = false
@@ -256,12 +302,12 @@ function initComponent (ComponentClass, isPage) {
         ComponentClass
       }
     }
-    const nextProps = filterProps(ComponentClass.defaultProps, propsManager.map[compid], this.$component.props)
+    const nextProps = filterProps(ComponentClass.defaultProps, propsManager.map[compid], this.$component.props, this.data.extraProps)
     this.$component.props = nextProps
   } else {
     this.$component.$router.path = getCurrentPageUrl()
   }
-  updateComponent(this.$component)
+  mountComponent(this.$component)
 }
 
 function createComponent (ComponentClass, isPage) {
@@ -288,6 +334,7 @@ function createComponent (ComponentClass, isPage) {
     created (options = {}) {
       if (isPage && cacheDataHas(preloadInitedComponent)) {
         this.$component = cacheDataGet(preloadInitedComponent, true)
+        this.$component.$componentType = 'PAGE'
       } else {
         this.$component = new ComponentClass({}, isPage)
       }
@@ -338,6 +385,10 @@ function createComponent (ComponentClass, isPage) {
           hook.cleanup()
         }
       })
+      const events = component.$$renderPropsEvents
+      if (isArray(events)) {
+        events.forEach(e => eventCenter.off(e))
+      }
     }
   }
   if (isPage) {
@@ -361,7 +412,8 @@ function createComponent (ComponentClass, isPage) {
       if (componentInstance[fn] && typeof componentInstance[fn] === 'function') {
         weappComponentConf.methods[fn] = function () {
           const component = this.$component
-          if (component[fn] && typeof component[fn] === 'function') {
+          if (component && component[fn] && typeof component[fn] === 'function') {
+            // eslint-disable-next-line no-useless-call
             return component[fn].call(component, ...arguments)
           }
         }

@@ -1,6 +1,6 @@
 import * as path from 'path'
 import * as babel from 'babel-core'
-import traverse from 'babel-traverse'
+import traverse, { NodePath } from 'babel-traverse'
 import * as t from 'babel-types'
 import * as _ from 'lodash'
 import generate from 'babel-generator'
@@ -9,6 +9,7 @@ import * as Util from '../util'
 import babylonConfig from '../config/babylon'
 import { convertSourceStringToAstExpression as toAst } from '../util/astConvert'
 import { REG_STYLE, REG_TYPESCRIPT, BUILD_TYPES, REG_SCRIPTS } from '../util/constants'
+import { convertAstExpressionToVariable as toVar } from '../util/astConvert'
 
 const template = require('babel-template')
 
@@ -43,6 +44,18 @@ const PACKAGES = {
   '@tarojs/mobx': '@tarojs/mobx',
   '@tarojs/mobx-rn': '@tarojs/mobx-rn'
 }
+
+const additionalConstructorNode = toAst(`Taro._$app = this`)
+const superNode = t.expressionStatement(
+  t.callExpression(
+    // @ts-ignore
+    t.super(),
+    [
+      t.identifier('props'),
+      t.identifier('context')
+    ]
+  )
+)
 
 function getInitPxTransformNode (projectConfig) {
   const pxTransformConfig = {designWidth: projectConfig.designWidth || 750}
@@ -207,7 +220,7 @@ const ClassDeclarationOrExpression = {
   }
 }
 
-export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
+export function parseJSCode ({code, filePath, isEntryFile, projectConfig}) {
   let ast
   try {
     ast = getJSAst(code, filePath)
@@ -223,9 +236,29 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
   let hasAppExportDefault
   let classRenderReturnJSX
 
+  let hasConstructor = false
+  let hasComponentDidMount = false
+  let hasComponentDidShow = false
+  let hasComponentDidHide = false
+  let hasComponentWillUnmount = false
+  let hasJSX = false
+
   traverse(ast, {
     ClassExpression: ClassDeclarationOrExpression,
     ClassDeclaration: ClassDeclarationOrExpression,
+    ExpressionStatement (astPath) {
+      const node = astPath.node as t.ExpressionStatement
+      const expression = node.expression as t.CallExpression
+      const callee = expression.callee as t.Identifier
+      if (callee && callee.name === 'require') {
+        const argument = expression.arguments[0] as t.StringLiteral
+        const value = argument.value
+        const valueExtname = path.extname(value)
+        if (REG_STYLE.test(valueExtname)) {
+          astPath.replaceWith(t.importDeclaration([], t.stringLiteral(value)))
+        }
+      }
+    },
     ImportDeclaration (astPath) {
       const node = astPath.node as t.ImportDeclaration
       const source = node.source
@@ -236,20 +269,23 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
       if (Util.isAliasPath(value, pathAlias)) {
         source.value = value = Util.replaceAliasPath(filePath, value, pathAlias)
       }
-      // 引入的包为 npm 包
+      // 引入的包为非 npm 包
       if (!Util.isNpmPkg(value)) {
         // import 样式处理
         if (REG_STYLE.test(valueExtname)) {
           const stylePath = path.resolve(path.dirname(filePath), value)
           if (styleFiles.indexOf(stylePath) < 0) {
-            styleFiles.push(stylePath)
+            //样式条件文件编译 .rn.scss
+            const realStylePath = Util.resolveStylePath(stylePath)
+            styleFiles.push(realStylePath)
           }
         }
         if (value.indexOf('.') === 0) {
-          const pathArr = value.split('/')
-          if (pathArr.indexOf('pages') >= 0) {
-            astPath.remove()
-          } else if (REG_SCRIPTS.test(value) || path.extname(value) === '') {
+          // const pathArr = value.split('/')
+          // if (pathArr.indexOf('pages') >= 0) {
+          //   astPath.remove()
+          // } else
+          if (REG_SCRIPTS.test(value) || path.extname(value) === '') {
             const absolutePath = path.resolve(filePath, '..', value)
             const dirname = path.dirname(absolutePath)
             const extname = path.extname(absolutePath)
@@ -281,13 +317,12 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
         const taroApisSpecifiers: t.ImportSpecifier[] = []
         specifiers.forEach((item, index) => {
           if ((item as t.ImportSpecifier).imported && taroApis.indexOf((item as t.ImportSpecifier).imported.name) >= 0) {
-            taroApisSpecifiers.push(t.importSpecifier(t.identifier((item as t.ImportSpecifier).local.name), t.identifier((item as t.ImportSpecifier).imported.name)))
+            taroApisSpecifiers.push(
+              t.importSpecifier(t.identifier((item as t.ImportSpecifier).local.name), t.identifier((item as t.ImportSpecifier).imported.name)))
             specifiers.splice(index, 1)
           }
         })
         source.value = PACKAGES['@tarojs/taro-rn']
-        // insert React
-        astPath.insertBefore(template(`import React from 'react'`, babylonConfig as any)())
 
         if (taroApisSpecifiers.length) {
           astPath.insertBefore(t.importDeclaration(taroApisSpecifiers, t.stringLiteral(PACKAGES['@tarojs/taro-rn'])))
@@ -322,34 +357,57 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
       }
     },
     ClassProperty: getClassPropertyVisitor({filePath, pages, iconPaths, isEntryFile}),
-    // 获取 classRenderReturnJSX
-    ClassMethod (astPath) {
-      const node = astPath.node as t.ClassMethod
-      const key = node.key as t.Identifier
-      if (key.name !== 'render' || !isEntryFile) return
-      astPath.traverse({
-        BlockStatement (astPath) {
-          if (astPath.parent === node) {
-            const node = astPath.node
-            astPath.traverse({
-              ReturnStatement (astPath) {
-                if (astPath.parent === node) {
-                  astPath.traverse({
-                    JSXElement (astPath) {
-                      classRenderReturnJSX = generate(astPath.node).code
-                    }
-                  })
-                }
-              }
-            })
-          }
+    ClassMethod: {
+      enter (astPath: NodePath<t.ClassMethod>) {
+        const node = astPath.node
+        const key = node.key
+        const keyName = toVar(key)
+        // 仅关注 app.js
+        if (!isEntryFile) return
+        // 初始化 生命周期函数判断
+        if (keyName === 'constructor') {
+          hasConstructor = true
+        } else if (keyName === 'componentDidMount') {
+          hasComponentDidMount = true
+        } else if (keyName === 'componentDidShow') {
+          hasComponentDidShow = true
+        } else if (keyName === 'componentDidHide') {
+          hasComponentDidHide = true
+        } else if (keyName === 'componentWillUnmount') {
+          hasComponentWillUnmount = true
         }
-      })
+        // 获取 app.js 的 classRenderReturnJSX
+        if (keyName == 'render') {
+          astPath.traverse({
+            BlockStatement (astPath) {
+              if (astPath.parent === node) {
+                const node = astPath.node
+                astPath.traverse({
+                  ReturnStatement (astPath) {
+                    if (astPath.parent === node) {
+                      astPath.traverse({
+                        JSXElement (astPath) {
+                          classRenderReturnJSX = generate(astPath.node).code
+                        }
+                      })
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
     },
 
     ExportDefaultDeclaration () {
       if (isEntryFile) {
         hasAppExportDefault = true
+      }
+    },
+    JSXElement: {
+      exit (astPath: NodePath<t.JSXElement>) {
+        hasJSX = true
       }
     },
     JSXOpeningElement: {
@@ -371,30 +429,84 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
           ClassMethod (astPath) {
             const node = astPath.node
             const key = node.key as t.Identifier
-            if (key.name !== 'render' || !isEntryFile) return
 
-            let funcBody = `
+            const keyName = toVar(key)
+            const isComponentDidMount = keyName === 'componentDidMount'
+            const isComponentWillUnmount = keyName === 'componentWillUnmount'
+            const isConstructor = keyName === 'constructor'
+
+            if (!isEntryFile) return
+
+            if (hasConstructor && isConstructor) {
+              node.body.body.push(additionalConstructorNode)
+            }
+
+            if (hasComponentDidShow && isComponentDidMount) {
+              const componentDidShowCallNode = toAst(`this.componentDidShow()`)
+              node.body.body.push(componentDidShowCallNode)
+            }
+
+            if (hasComponentDidHide && isComponentWillUnmount) {
+              const componentDidHideCallNode = toAst(`this.componentDidHide()`)
+              node.body.body.unshift(componentDidHideCallNode)
+            }
+
+            if (key.name == 'render') {
+              let funcBody = `
               <${taroComponentsRNProviderName}>
                 ${classRenderReturnJSX}
               </${taroComponentsRNProviderName}>`
 
-            if (pages.length > 0) {
-              funcBody = `
+              if (pages.length > 0) {
+                funcBody = `
                 <${taroComponentsRNProviderName}>
                   <RootStack/>
                 </${taroComponentsRNProviderName}>`
-            }
+              }
 
-            if (providerComponentName && storeName) {
-              // 使用redux 或 mobx
-              funcBody = `
+              if (providerComponentName && storeName) {
+                // 使用redux 或 mobx
+                funcBody = `
                 <${providorImportName} store={${storeName}}>
                   ${funcBody}
                 </${providorImportName}>`
+              }
+              node.body = template(`{return (${funcBody});}`, babylonConfig as any)() as any
             }
-            node.body = template(`{return (${funcBody});}`, babylonConfig as any)() as any
           },
 
+          ClassBody: {
+            exit (astPath: NodePath<t.ClassBody>) {
+              if (!isEntryFile) return
+              const node = astPath.node
+              if (hasComponentDidShow && !hasComponentDidMount) {
+                node.body.push(t.classMethod(
+                  'method', t.identifier('componentDidMount'), [],
+                  t.blockStatement([
+                    toAst('this.componentDidShow && this.componentDidShow()') as t.Statement
+                  ]), false, false))
+              }
+              if (hasComponentDidHide && !hasComponentWillUnmount) {
+                node.body.push(t.classMethod(
+                  'method', t.identifier('componentWillUnmount'), [],
+                  t.blockStatement([
+                    toAst('this.componentDidHide && this.componentDidHide()') as t.Statement
+                  ]), false, false))
+              }
+              if (!hasConstructor) {
+                node.body.unshift(
+                  t.classMethod(
+                    'constructor',
+                    t.identifier('constructor'),
+                    [t.identifier('props'), t.identifier('context')],
+                    t.blockStatement([superNode, additionalConstructorNode] as t.Statement[]),
+                    false,
+                    false
+                  )
+                )
+              }
+            }
+          },
           CallExpression (astPath) {
             const node = astPath.node
             const callee = node.callee as t.Identifier
@@ -418,6 +530,10 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
             }
           }
         })
+        // insert React
+        if (hasJSX) {
+          node.body.unshift(template(`import React from 'react'`, babylonConfig as any)())
+        }
         // import Taro from @tarojs/taro-rn
         if (taroImportDefaultName) {
           const importTaro = template(
@@ -507,15 +623,20 @@ export function parseJSCode ({ code, filePath, isEntryFile, projectConfig }) {
       'process.env.TARO_ENV': BUILD_TYPES.RN
     }, Util.generateEnvList(projectConfig.env || {}), Util.generateConstantsList(projectConfig.defineConstants || {}))
     // TODO 使用 babel-plugin-transform-jsx-to-stylesheet 处理 JSX 里面样式的处理，删除无效的样式引入待优化
-    ast = babel.transformFromAst(ast, code, {
-      plugins: [
-        [require('babel-plugin-transform-jsx-to-stylesheet'), {filePath}],
-        require('babel-plugin-transform-decorators-legacy').default,
-        require('babel-plugin-transform-class-properties'),
-        [require('babel-plugin-danger-remove-unused-import'), {ignore: ['@tarojs/taro', 'react', 'react-native', 'nervjs']}],
-        [require('babel-plugin-transform-define').default, constantsReplaceList]
-      ]
-    }).ast
+
+    const plugins = [
+      [require('babel-plugin-transform-jsx-to-stylesheet'), {filePath}],
+      require('babel-plugin-transform-class-properties'),
+      require('babel-plugin-transform-decorators-legacy').default,
+      [require('babel-plugin-danger-remove-unused-import'), {ignore: ['@tarojs/taro', 'react', 'react-native', 'nervjs']}],
+      [require('babel-plugin-transform-define').default, constantsReplaceList]
+    ]
+
+    // const babelConfig = projectConfig.plugins.babel
+    // const plugins = babelConfig.plugins.concat(extraBabelPlugins)
+    const newBabelConfig = Object.assign({}, {plugins})
+
+    ast = babel.transformFromAst(ast, code, newBabelConfig).ast
   } catch (e) {
     throw e
   }

@@ -3,9 +3,9 @@ import * as path from 'path';
 import * as constparse from 'postcss-plugin-constparse';
 import * as pxtransform from 'postcss-pxtransform';
 import { sync as resolveSync } from 'resolve';
-import { isNpmPackage, appPath, recursiveMerge } from '../util';
+import { isNpmPackage, recursiveMerge } from '../util';
 
-import { PostcssOption } from '../util/types';
+import { PostcssOption, TogglableOptions } from '../util/types'
 
 const defaultAutoprefixerOption = {
   enable: true,
@@ -41,7 +41,7 @@ const optionsWithDefaults = ['autoprefixer', 'pxtransform', 'cssModules']
 
 const plugins = [] as any[]
 
-export const getPostcssPlugins = function ({
+export const getPostcssPlugins = function (appPath: string, {
   designWidth,
   deviceRatio,
   postcssOption = {} as PostcssOption
@@ -55,8 +55,8 @@ export const getPostcssPlugins = function ({
     defaultPxtransformOption.config.deviceRatio = deviceRatio
   }
 
-  const autoprefixerOption = recursiveMerge({}, defaultAutoprefixerOption, postcssOption.autoprefixer)
-  const pxtransformOption = recursiveMerge({}, defaultPxtransformOption, postcssOption.pxtransform)
+  const autoprefixerOption = recursiveMerge<TogglableOptions>({}, defaultAutoprefixerOption, postcssOption.autoprefixer)
+  const pxtransformOption = recursiveMerge<TogglableOptions>({}, defaultPxtransformOption, postcssOption.pxtransform)
   // const cssModulesOption = recursiveMerge({}, defaultCssModulesOption, postcssOption.cssModules)
 
   if (autoprefixerOption.enable) {

@@ -1,4 +1,6 @@
 import isPlainObject from 'lodash/isPlainObject'
+import { Current } from '@tarojs/taro'
+import { SimpleMap } from '@tarojs/utils'
 
 export function isEmptyObject (obj) {
   if (!obj || !isPlainObject(obj)) {
@@ -10,6 +12,10 @@ export function isEmptyObject (obj) {
     }
   }
   return true
+}
+
+export function isUndefined (o) {
+  return o === undefined
 }
 
 /**
@@ -122,7 +128,18 @@ function diffArrToPath (to, from, res = {}, keyPrev = '') {
             res[targetKey] = toItem
           } else {
             // 对象
-            diffObjToPath(toItem, fromItem, res, `${targetKey}.`)
+            let shouldDiffObject = true
+            Object.keys(fromItem).some(key => {
+              if (typeof toItem[key] === 'undefined' && typeof fromItem[key] !== 'undefined') {
+                shouldDiffObject = false
+                return true
+              }
+            })
+            if (shouldDiffObject) {
+              diffObjToPath(toItem, fromItem, res, `${targetKey}.`)
+            } else {
+              res[targetKey] = toItem
+            }
           }
         }
       }
@@ -143,11 +160,9 @@ export function diffObjToPath (to, from, res = {}, keyPrev = '') {
     const targetKey = `${keyPrev}${key}`
     if (toItem === fromItem) {
       continue
-    } else
-    if (!hasProp.call(from, key)) {
+    } else if (!hasProp.call(from, key)) {
       res[targetKey] = toItem
-    } else
-    if (typeof toItem !== typeof fromItem) {
+    } else if (typeof toItem !== typeof fromItem) {
       res[targetKey] = toItem
     } else {
       if (typeof toItem !== 'object') {
@@ -166,11 +181,22 @@ export function diffObjToPath (to, from, res = {}, keyPrev = '') {
           }
         } else {
           // null
-          if (!toItem || !fromItem || keyList(toItem).length < keyList(fromItem).length) {
+          if (!toItem || !fromItem) {
             res[targetKey] = toItem
           } else {
-          // 对象
-            diffObjToPath(toItem, fromItem, res, `${targetKey}.`)
+            // 对象
+            let shouldDiffObject = true
+            Object.keys(fromItem).some(key => {
+              if (typeof toItem[key] === 'undefined' && typeof fromItem[key] !== 'undefined') {
+                shouldDiffObject = false
+                return true
+              }
+            })
+            if (shouldDiffObject) {
+              diffObjToPath(toItem, fromItem, res, `${targetKey}.`)
+            } else {
+              res[targetKey] = toItem
+            }
           }
         }
       }
@@ -230,8 +256,8 @@ export function getElementById (component, id, type) {
 
   let res
   if (type === 'component') {
-    const _childs = component._childs || {}
-    res = _childs[id.replace('#', '')] || null
+    const childs = component.$component.$childs || {}
+    res = childs[id.replace('#', '')] || null
   } else {
     const query = my.createSelectorQuery().in(component)
     res = query.select(id)
@@ -240,4 +266,39 @@ export function getElementById (component, id, type) {
   if (res) return res
 
   return null
+}
+
+function genId () {
+  if (!my.taroCompCounter) {
+    my.taroCompCounter = 0
+  }
+  return String(my.taroCompCounter++)
+}
+
+if (!my.compIdsMapper) {
+  try {
+    my.compIdsMapper = new Map();
+  } catch (error) {
+    my.compIdsMapper = new SimpleMap();
+  }
+}
+
+export function genCompid (key, isNeedCreate) {
+  if (!Current || !Current.current || !Current.current.$scope) return []
+
+  const prevId = my.compIdsMapper.get(key)
+  if (isNeedCreate) {
+    const id = genId()
+    my.compIdsMapper.set(key, id)
+    return [prevId, id]
+  } else {
+    const id = prevId || genId()
+    !prevId && my.compIdsMapper.set(key, id)
+    return [null, id]
+  }
+}
+
+let prefix = 0
+export function genCompPrefix () {
+  return String(prefix++)
 }

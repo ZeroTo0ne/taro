@@ -34,6 +34,7 @@ class Input extends Nerv.Component {
 
     // input hook
     this.isOnComposition = false
+    this.onInputExcuted = false
   }
 
   componentDidMount () {
@@ -43,7 +44,7 @@ class Input extends Nerv.Component {
     }
   }
 
-  componentWillUnMount () {
+  componentWillUnmount () {
     // 修复无法选择文件
     if (this.props.type === 'file') {
       this.inputRef.removeEventListener('change', this.onInput)
@@ -59,9 +60,10 @@ class Input extends Nerv.Component {
       onInput = '',
       onChange = ''
     } = this.props
-    if (!this.isOnComposition) {
+    if (!this.isOnComposition && !this.onInputExcuted) {
       let value = e.target.value
       const inputType = getTrueType(type, confirmType, password)
+      this.onInputExcuted = true
       /* 修复 number 类型 maxLength 无效 */
       if (inputType === 'number' && value && maxLength <= value.length) {
         value = value.substring(0, maxLength)
@@ -73,7 +75,7 @@ class Input extends Nerv.Component {
         value: { value }
       })
       // 修复 IOS 光标跳转问题
-      if (!['number', 'file'].includes(inputType)) {
+      if (!(['number', 'file'].indexOf(inputType) >= 0)) {
         const pos = e.target.selectionEnd
         setTimeout(
           () => {
@@ -90,6 +92,7 @@ class Input extends Nerv.Component {
 
   onFocus (e) {
     const { onFocus } = this.props
+    this.onInputExcuted = false
     Object.defineProperty(e, 'detail', {
       enumerable: true,
       value: {
@@ -111,7 +114,9 @@ class Input extends Nerv.Component {
   }
 
   onKeyDown (e) {
-    const { onConfirm } = this.props
+    const { onConfirm, onKeyDown } = this.props
+    this.onInputExcuted = false
+    onKeyDown && onKeyDown(e)
     if (e.keyCode === 13 && onConfirm) {
       Object.defineProperty(e, 'detail', {
         enumerable: true,
@@ -128,10 +133,11 @@ class Input extends Nerv.Component {
 
     if (e.type === 'compositionend') {
       this.isOnComposition = false
+      this.onInputExcuted = false
+      this.onInput(e)
     } else {
       this.isOnComposition = true
     }
-    this.onInput(e)
   }
 
   render () {
@@ -168,7 +174,6 @@ class Input extends Nerv.Component {
       <input
         ref={input => {
           this.inputRef = input
-          input && focus && input.focus()
         }}
         {...otherProps}
         className={cls}

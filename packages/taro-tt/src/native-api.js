@@ -11,27 +11,31 @@ import { queryToJson, getUniqueKey } from './util'
 const RequestQueue = {
   MAX_REQUEST: 5,
   queue: [],
+  pendingQueue: [],
+
   request (options) {
-    this.push(options)
-    // 返回request task
+    this.queue.push(options)
     return this.run()
   },
 
-  push (options) {
-    this.queue.push(options)
-  },
-
   run () {
-    if (!this.queue.length) {
-      return
-    }
-    if (this.queue.length <= this.MAX_REQUEST) {
-      let options = this.queue.shift()
-      let completeFn = options.complete
-      options.complete = () => {
-        completeFn && completeFn.apply(options, [...arguments])
+    if (!this.queue.length) return
+
+    while (this.pendingQueue.length < this.MAX_REQUEST) {
+      const options = this.queue.shift()
+      let successFn = options.success
+      let failFn = options.fail
+      options.success = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
         this.run()
+        successFn && successFn.apply(options, args)
       }
+      options.fail = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
+        this.run()
+        failFn && failFn.apply(options, args)
+      }
+      this.pendingQueue.push(options)
       return tt.request(options)
     }
   }
@@ -103,7 +107,7 @@ function processApis (taro) {
           return tt[key](options)
         }
 
-        if (key === 'navigateTo' || key === 'redirectTo' || key === 'switchTab') {
+        if (key === 'navigateTo' || key === 'redirectTo') {
           let url = obj['url'] ? obj['url'].replace(/^\//, '') : ''
           if (url.indexOf('?') > -1) url = url.split('?')[0]
 
@@ -113,8 +117,10 @@ function processApis (taro) {
             if (component.componentWillPreload) {
               const cacheKey = getUniqueKey()
               const MarkIndex = obj.url.indexOf('?')
-              const params = queryToJson(obj.url.substring(MarkIndex + 1, obj.url.length))
-              obj.url += (MarkIndex > -1 ? '&' : '?') + `${preloadPrivateKey}=${cacheKey}`
+              const hasMark = MarkIndex > -1
+              const urlQueryStr = hasMark ? obj.url.substring(MarkIndex + 1, obj.url.length) : ''
+              const params = queryToJson(urlQueryStr)
+              obj.url += (hasMark ? '&' : '?') + `${preloadPrivateKey}=${cacheKey}`
               cacheDataSet(cacheKey, component.componentWillPreload(params))
               cacheDataSet(preloadInitedComponent, component)
             }
@@ -176,7 +182,14 @@ function processApis (taro) {
 }
 
 function pxTransform (size) {
-  const { designWidth, deviceRatio } = this.config
+  const {
+    designWidth = 750,
+    deviceRatio = {
+      '640': 2.34 / 2,
+      '750': 1,
+      '828': 1.81 / 2
+    }
+  } = this.config || {}
   if (!(designWidth in deviceRatio)) {
     throw new Error(`deviceRatio 配置中不存在 ${designWidth} 的设置！`)
   }
@@ -187,6 +200,7 @@ export default function initNativeApi (taro) {
   processApis(taro)
   taro.request = link.request.bind(link)
   taro.addInterceptor = link.addInterceptor.bind(link)
+  taro.cleanInterceptors = link.cleanInterceptors.bind(link)
   taro.getCurrentPages = getCurrentPages
   taro.getApp = getApp
   taro.initPxTransform = initPxTransform.bind(taro)

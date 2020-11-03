@@ -1,10 +1,8 @@
 import React from 'react'
-import { View, Text } from 'react-native'
+import { View, Text, YellowBox, AppState } from 'react-native'
 import LoadingView from './LoadingView'
 import TaroProvider from './TaroProvider'
 import { getNavigationOptions } from './utils'
-
-import { YellowBox } from 'react-native'
 
 /**
  * @description 包裹页面 Screen 组件，处理生命周期，注入方法
@@ -20,6 +18,9 @@ function getWrappedScreen (Screen, Taro, globalNavigationOptions = {}) {
       this.screenRef = React.createRef()
       // issue https://github.com/react-navigation/react-navigation/issues/3956
       YellowBox.ignoreWarnings(['Warning: isMounted(...) is deprecated', 'Module RCTImageLoader'])
+      this.state = {
+        appState: AppState.currentState
+      }
     }
 
     static navigationOptions = ({navigation}) => {
@@ -27,17 +28,25 @@ function getWrappedScreen (Screen, Taro, globalNavigationOptions = {}) {
       const title = navigation.getParam('title') || navigationOptions.title || globalNavigationOptions.title
       const rest = (navigationOptions.navigationStyle || globalNavigationOptions.navigationStyle) === 'custom' ? {header: null} : {}
       const headerTintColor = navigation.getParam('headerTintColor') || navigationOptions.headerTintColor || globalNavigationOptions.headerTintColor
-      return {
+      const options = {
         ...rest,
         headerTitle: <View style={{flexDirection: 'row', alignItems: 'center'}}>
           {navigation.getParam('isNavigationBarLoadingShow') && <LoadingView />}
-          <Text style={{flexDirection: 'row', flex: 1, fontSize: 17, fontWeight: '600', textAlign: 'center'}}>{title}</Text>
+          <Text style={{flexDirection: 'row', flex: 1, fontSize: 17, fontWeight: '600', textAlign: 'center', color: headerTintColor}}>{title}</Text>
         </View>,
         headerTintColor,
         headerStyle: {
           backgroundColor: navigation.getParam('backgroundColor') || navigationOptions.backgroundColor || globalNavigationOptions.backgroundColor
         }
       }
+
+      // 如果页面组件也定义了navigationOptions，那么就合并页面那边的返回值
+      if (Screen.navigationOptions !== undefined) {
+        const customOptions = Screen.navigationOptions({navigation})
+        Object.assign(options, customOptions)
+        return options
+      }
+      return options
     }
 
     /**
@@ -118,16 +127,33 @@ function getWrappedScreen (Screen, Taro, globalNavigationOptions = {}) {
       }
     }
 
-    componentDidMount () {
+    navigationMethodInit () {
+      Taro.setNavigationBarTitle = this.setNavigationBarTitle.bind(this)
+      Taro.setNavigationBarColor = this.setNavigationBarColor.bind(this)
+      Taro.showNavigationBarLoading = this.showNavigationBarLoading.bind(this)
+      Taro.hideNavigationBarLoading = this.hideNavigationBarLoading.bind(this)
+    }
+
+    _handleAppStateChange (nextAppState) {
+      if (this.state.appState.match(/inactive|background/) && nextAppState === 'active') {
+        // console.log('foreground!')
+        this.getScreenInstance().componentDidShow && this.getScreenInstance().componentDidShow()
+      }
+      if (this.state.appState === 'active' && nextAppState.match(/inactive|background/)) {
+        // console.log('background!')
+        this.getScreenInstance().componentDidHide && this.getScreenInstance().componentDidHide()
+      }
+      this.setState({appState: nextAppState})
+    }
+
+    componentWillMount () {
+      this.navigationMethodInit()
       // didFocus
       this.didFocusSubscription = this.props.navigation.addListener(
         'didFocus',
         payload => {
           // 页面进入后回退并不会调用 React 生命周期，需要在路由生命周期中绑定 this
-          Taro.setNavigationBarTitle = this.setNavigationBarTitle.bind(this)
-          Taro.setNavigationBarColor = this.setNavigationBarColor.bind(this)
-          Taro.showNavigationBarLoading = this.showNavigationBarLoading.bind(this)
-          Taro.hideNavigationBarLoading = this.hideNavigationBarLoading.bind(this)
+          this.navigationMethodInit()
           // 页面聚焦时，调用 componentDidShow
           this.getScreenInstance().componentDidShow && this.getScreenInstance().componentDidShow()
         }
@@ -144,10 +170,21 @@ function getWrappedScreen (Screen, Taro, globalNavigationOptions = {}) {
       this.screenRef.current && this.setState({}) // TODO 不然 current 为null ??
     }
 
+    componentDidMount () {
+      AppState.addEventListener('change', this._handleAppStateChange.bind(this))
+    }
+
     componentWillUnmount () {
       // Remove the listener when you are done
       this.didFocusSubscription && this.didFocusSubscription.remove()
       this.willBlurSubscription && this.willBlurSubscription.remove()
+      // AppState
+      AppState.removeEventListener('change', this._handleAppStateChange.bind(this))
+    }
+
+    onPullDownRefresh () {
+      this.getScreenInstance().onPullDownRefresh &&
+      this.getScreenInstance().onPullDownRefresh()
     }
 
     render () {
@@ -162,7 +199,7 @@ function getWrappedScreen (Screen, Taro, globalNavigationOptions = {}) {
           Taro={Taro}
           enablePullDownRefresh={isScreenEnablePullDownRefresh}
           disableScroll={disableScroll}
-          onPullDownRefresh={screenInstance.onPullDownRefresh && screenInstance.onPullDownRefresh.bind(screenInstance)}
+          onPullDownRefresh={this.onPullDownRefresh.bind(this)}
           onReachBottom={screenInstance.onReachBottom}
           onScroll={screenInstance.onScroll}
           {...this.props}

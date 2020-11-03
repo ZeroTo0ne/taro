@@ -1,13 +1,16 @@
 import { Adapters } from './adapter'
 import { eslintValidation } from './eslint'
 import { TransformOptions } from 'babel-core'
-import { functionalComponent } from './functional'
+import { functionalComponent, Status } from './functional'
+import { isTestEnv } from './env'
+import { buildVistor } from './class-method-renamer'
 
 export interface Options {
   isRoot?: boolean,
   isApp: boolean,
   outputPath: string,
   sourcePath: string,
+  sourceDir?: string,
   code: string,
   isTyped: boolean,
   isNormal?: boolean,
@@ -17,18 +20,26 @@ export interface Options {
   rootProps?: object
 }
 
-export const transformOptions: Options = {} as any
+export let transformOptions: Options = {} as Options
 
 export const setTransformOptions = (options: Options) => {
-  for (const key in options) {
-    if (options.hasOwnProperty(key)) {
-      transformOptions[key] = options[key]
-    }
-  }
+  transformOptions = { ...options }
 }
 
 export const buildBabelTransformOptions: () => TransformOptions = () => {
+  Status.isSFC = false
+  let plugins = [
+    require('babel-plugin-transform-do-expressions'),
+    require('babel-plugin-transform-export-extensions'),
+    require('babel-plugin-transform-flow-strip-types'),
+    [require('babel-plugin-transform-define').default, transformOptions.env]
+  ]
+  if (!transformOptions.isNormal) {
+    plugins.push(buildVistor())
+  }
   return {
+    filename: transformOptions.sourcePath,
+    babelrc: false,
     parserOpts: {
       sourceType: 'module',
       plugins: [
@@ -47,13 +58,10 @@ export const buildBabelTransformOptions: () => TransformOptions = () => {
         'exportExtensions'
       ] as any[]
     },
-    plugins: [
-      require('babel-plugin-transform-do-expressions'),
-      require('babel-plugin-transform-export-extensions'),
-      require('babel-plugin-transform-flow-strip-types'),
-      functionalComponent,
-      [require('babel-plugin-transform-define').default, transformOptions.env]
-    ].concat(process.env.ESLINT === 'false' || transformOptions.isNormal || transformOptions.isTyped ? [] : eslintValidation)
-    .concat((process.env.NODE_ENV === 'test') ? [] : require('babel-plugin-remove-dead-code').default)
+    plugins: plugins
+      .concat(require('babel-plugin-preval'))
+      .concat(process.env.TARO_ENV === 'rn' ? [] : functionalComponent)
+      .concat(process.env.ESLINT === 'false' || transformOptions.isNormal || transformOptions.isTyped ? [] : eslintValidation)
+      .concat((isTestEnv) ? [] : require('babel-plugin-minify-dead-code').default)
   }
 }

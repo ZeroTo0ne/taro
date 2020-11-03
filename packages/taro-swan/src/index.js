@@ -11,15 +11,34 @@ import {
   internal_inline_style,
   internal_get_original,
   interceptors,
+  RefsArray,
+  handleLoopRef,
   useEffect,
   useLayoutEffect,
   useReducer,
   useState,
+  useDidShow,
+  useDidHide,
+  usePullDownRefresh,
+  useReachBottom,
+  usePageScroll,
+  useResize,
+  useShareAppMessage,
+  useTabItemTap,
+  useShareTimeline,
+  useAddToFavorites,
+  useRouter,
+  useScope,
   useRef,
   useCallback,
   useMemo,
-  useImperativeHandle
+  useImperativeHandle,
+  useContext,
+  createContext,
+  memo,
+  setIsUsingDiff
 } from '@tarojs/taro'
+import { shallowEqual } from '@tarojs/utils'
 
 import Component from './component'
 import PureComponent from './pure-component'
@@ -46,17 +65,35 @@ export const Taro = {
   createComponent,
   internal_get_original,
   interceptors,
-  getElementById,
+  RefsArray,
+  handleLoopRef: handleLoopRef(getElementById),
   propsManager,
   genCompid,
   useEffect,
   useLayoutEffect,
   useReducer,
   useState,
+  useDidShow,
+  useDidHide,
+  usePullDownRefresh,
+  useReachBottom,
+  usePageScroll,
+  useResize,
+  useShareAppMessage,
+  useShareTimeline,
+  useAddToFavorites,
+  useTabItemTap,
+  useRouter,
+  useScope,
   useRef,
   useCallback,
   useMemo,
-  useImperativeHandle
+  useImperativeHandle,
+  useContext,
+  createContext,
+  memo,
+  shallowEqual,
+  setIsUsingDiff
 }
 
 export default Taro

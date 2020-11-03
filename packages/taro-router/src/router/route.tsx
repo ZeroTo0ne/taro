@@ -1,9 +1,9 @@
-import { Component } from '@tarojs/taro-h5';
-import Nerv from 'nervjs';
+import Taro from '@tarojs/taro-h5'
+import Nerv, { nextTick } from 'nervjs'
 
-import createWrappedComponent from './createWrappedComponent';
-import { Location, RouteObj } from '../utils/types';
-import { tryToCall } from '../utils/index';
+import { tryToCall } from '../utils'
+import { Location, RouteObj } from '../utils/types'
+import createWrappedComponent from './createWrappedComponent'
 
 type RouteProps = RouteObj & {
   currentLocation: Location;
@@ -32,7 +32,7 @@ const getScroller = () => {
 }
 let scroller
 
-class Route extends Component<RouteProps, {}> {
+class Route extends Taro.Component<RouteProps, {}> {
   matched = false;
   wrappedComponent;
   componentRef;
@@ -40,17 +40,33 @@ class Route extends Component<RouteProps, {}> {
   isRoute = true;
   scrollPos = 0;
 
+  state = {
+    location: {}
+  }
+
   constructor (props, context) {
     super(props, context)
     this.matched = this.computeMatch(this.props.currentLocation)
+    if (this.matched) {
+      this.state = { location: this.props.currentLocation }
+    }
   }
 
-  computeMatch (currentLocation) {
+  computeMatch (currentLocation: Location) {
     const path = currentLocation.path;
     const key = currentLocation.state.key;
     const isIndex = this.props.isIndex;
-    if (isIndex && path === '/') return true
-    return key === this.props.key
+    const isTabBar = this.props.isTabBar;
+
+    if (key !== undefined) {
+      if (isTabBar) {
+        return key === this.props.key && path === this.props.path
+      } else {
+        return key === this.props.key
+      }
+    } else {
+      return isIndex && path === '/'
+    }
   }
 
   getWrapRef = ref => {
@@ -58,11 +74,23 @@ class Route extends Component<RouteProps, {}> {
   }
 
   getRef = ref => {
-    if (ref) this.componentRef = ref
-    this.props.collectComponent(ref, this.props.k)
+    if (ref) {
+      if (ref.props.location !== this.state.location) {
+        ref.props.location = this.state.location
+      }
+      this.componentRef = ref
+      this.props.collectComponent(ref, this.props.key)
+    }
   }
 
   updateComponent (props = this.props) {
+    if (this.matched && this.componentRef) {
+      this.setState({
+        location: props.currentLocation
+      }, () => {
+        this.componentRef.props.location = this.state.location
+      })
+    }
     props.componentLoader()
       .then(({ default: component }) => {
         if (!component) {
@@ -76,19 +104,16 @@ class Route extends Component<RouteProps, {}> {
       })
   }
 
-  componentWillMount () {
-    this.updateComponent()
-  }
-
   componentDidMount () {
     scroller = scroller || getScroller()
     scroller.set(0)
+    this.updateComponent()
   }
 
-  componentWillReceiveProps (nProps, nContext) {
+  componentWillReceiveProps (nProps: RouteProps) {
+    const isRedirect = nProps.isRedirect
     const lastMatched = this.matched
     const nextMatched = this.computeMatch(nProps.currentLocation)
-    const isRedirect = nProps.isRedirect
 
     if (isRedirect) {
       this.updateComponent(nProps)
@@ -99,17 +124,21 @@ class Route extends Component<RouteProps, {}> {
     this.matched = nextMatched
 
     if (nextMatched) {
-      this.showPage()
       if (!isRedirect) {
-        scroller = scroller || getScroller()
-        scroller.set(this.scrollPos)
+        nextTick(() => {
+          this.showPage()
+          scroller = scroller || getScroller()
+          scroller.set(this.scrollPos)
+        })
         tryToCall(this.componentRef.componentDidShow, this.componentRef)
       }
     } else {
       scroller = scroller || getScroller()
       this.scrollPos = scroller.get()
-      this.hidePage()
-      tryToCall(this.componentRef.componentDidHide, this.componentRef)
+      nextTick(() => {
+        this.hidePage()
+        tryToCall(this.componentRef.componentDidHide, this.componentRef)
+      })
     }
   }
 
@@ -129,7 +158,7 @@ class Route extends Component<RouteProps, {}> {
   hidePage () {
     const dom = this.containerRef
     if (!dom) {
-      return console.error(`showPage:fail Received a falsy component for route "${this.props.path}". Forget to export it?`)
+      return console.error(`hidePage:fail Received a falsy component for route "${this.props.path}". Forget to export it?`)
     }
     dom.style.display = 'none'
   }
@@ -138,12 +167,13 @@ class Route extends Component<RouteProps, {}> {
     if (!this.wrappedComponent) return null
 
     const WrappedComponent = this.wrappedComponent
+
     return (
       <div
         className="taro_page"
         ref={this.getWrapRef}
-        style={"min-height: 100%"}>
-        <WrappedComponent ref={this.getRef} />
+        style={{ minHeight: '100%' }}>
+        <WrappedComponent ref={this.getRef} location={this.state.location} />
       </div>
     )
   }

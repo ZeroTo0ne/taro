@@ -36,3 +36,41 @@ export function detachAllRef (component) {
     component.refs = {}
   }
 }
+
+export class RefsArray extends Array {
+  /**
+   * @param {Array} initList
+   */
+  constructor (initList = []) {
+    super(...initList)
+    this.inited = false
+  }
+  pushRefs ($$refs) {
+    if (this.inited) return
+    $$refs.forEach(ref => this.pushRef(ref))
+    this.inited = true
+  }
+  pushRef (ref) {
+    const isExist = this.find(item => item.id === ref.id)
+    !isExist && this.push(ref)
+  }
+}
+
+export function handleLoopRef (getElementById) {
+  return (component, id, type, handler) => {
+    if (!component) return null
+
+    const dom = getElementById(component, id, type)
+
+    const handlerType = typeof handler
+    if (handlerType !== 'function' && handlerType !== 'object') {
+      return console.warn(`循环 Ref 只支持函数或 createRef()，当前类型为：${handlerType}`)
+    }
+
+    if (handlerType === 'object') {
+      handler.current = dom
+    } else if (handlerType === 'function') {
+      handler.call(component.$component, dom)
+    }
+  }
+}

@@ -8,29 +8,33 @@ import {
 import { cacheDataSet, cacheDataGet } from './data-cache'
 import { queryToJson, getUniqueKey } from './util'
 const RequestQueue = {
-  MAX_REQUEST: 5,
+  MAX_REQUEST: 10,
   queue: [],
+  pendingQueue: [],
+
   request (options) {
-    this.push(options)
-    // 返回request task
+    this.queue.push(options)
     return this.run()
   },
 
-  push (options) {
-    this.queue.push(options)
-  },
-
   run () {
-    if (!this.queue.length) {
-      return
-    }
-    if (this.queue.length <= this.MAX_REQUEST) {
-      let options = this.queue.shift()
-      let completeFn = options.complete
-      options.complete = (...args) => {
-        completeFn && completeFn.apply(options, args)
+    if (!this.queue.length) return
+
+    while (this.pendingQueue.length < this.MAX_REQUEST) {
+      const options = this.queue.shift()
+      let successFn = options.success
+      let failFn = options.fail
+      options.success = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
         this.run()
+        successFn && successFn.apply(options, args)
       }
+      options.fail = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
+        this.run()
+        failFn && failFn.apply(options, args)
+      }
+      this.pendingQueue.push(options)
       return wx.request(options)
     }
   }
@@ -90,6 +94,13 @@ function processApis (taro) {
   const preloadPrivateKey = '__preload_'
   const preloadInitedComponent = '$preloadComponent'
   Object.keys(weApis).forEach(key => {
+    if (!(key in wx)) {
+      taro[key] = () => {
+        console.warn(`微信小程序暂不支持 ${key}`)
+      }
+      return
+    }
+
     if (!onAndSyncApis[key] && !noPromiseApis[key]) {
       taro[key] = (options, ...args) => {
         options = options || {}
@@ -102,7 +113,7 @@ function processApis (taro) {
           return wx[key](options)
         }
 
-        if (key === 'navigateTo' || key === 'redirectTo' || key === 'switchTab') {
+        if (key === 'navigateTo' || key === 'redirectTo') {
           let url = obj['url'] ? obj['url'].replace(/^\//, '') : ''
           if (url.indexOf('?') > -1) url = url.split('?')[0]
 
@@ -112,8 +123,10 @@ function processApis (taro) {
             if (component.componentWillPreload) {
               const cacheKey = getUniqueKey()
               const MarkIndex = obj.url.indexOf('?')
-              const params = queryToJson(obj.url.substring(MarkIndex + 1, obj.url.length))
-              obj.url += (MarkIndex > -1 ? '&' : '?') + `${preloadPrivateKey}=${cacheKey}`
+              const hasMark = MarkIndex > -1
+              const urlQueryStr = hasMark ? obj.url.substring(MarkIndex + 1, obj.url.length) : ''
+              const params = queryToJson(urlQueryStr)
+              obj.url += (hasMark ? '&' : '?') + `${preloadPrivateKey}=${cacheKey}`
               cacheDataSet(cacheKey, component.componentWillPreload(params))
               cacheDataSet(preloadInitedComponent, component)
             }
@@ -123,9 +136,11 @@ function processApis (taro) {
         if (useDataCacheApis[key]) {
           const url = obj['url'] = obj['url'] || ''
           const MarkIndex = url.indexOf('?')
-          const params = queryToJson(url.substring(MarkIndex + 1, url.length))
+          const hasMark = MarkIndex > -1
+          const urlQueryStr = hasMark ? url.substring(MarkIndex + 1, url.length) : ''
+          const params = queryToJson(urlQueryStr)
           const cacheKey = getUniqueKey()
-          obj.url += (MarkIndex > -1 ? '&' : '?') + `${routerParamsPrivateKey}=${cacheKey}`
+          obj.url += (hasMark ? '&' : '?') + `${routerParamsPrivateKey}=${cacheKey}`
           cacheDataSet(cacheKey, params)
         }
 
@@ -159,6 +174,12 @@ function processApis (taro) {
             }
             return p
           }
+          p.headersReceived = cb => {
+            if (task) {
+              task.onHeadersReceived(cb)
+            }
+            return p
+          }
           p.abort = cb => {
             cb && cb()
             if (task) {
@@ -184,7 +205,14 @@ function processApis (taro) {
 }
 
 function pxTransform (size) {
-  const { designWidth, deviceRatio } = this.config
+  const {
+    designWidth = 750,
+    deviceRatio = {
+      '640': 2.34 / 2,
+      '750': 1,
+      '828': 1.81 / 2
+    }
+  } = this.config || {}
   if (!(designWidth in deviceRatio)) {
     throw new Error(`deviceRatio 配置中不存在 ${designWidth} 的设置！`)
   }
@@ -210,7 +238,8 @@ function wxCloud (taro) {
     'downloadFile',
     'getTempFileURL',
     'deleteFile',
-    'callFunction'
+    'callFunction',
+    'CloudID'
   ]
   apiList.forEach(v => {
     wxcloud[v] = wxC[v]
@@ -218,10 +247,19 @@ function wxCloud (taro) {
   taro.cloud = wxcloud
 }
 
+function wxEnvObj (taro) {
+  const wxEnv = wx.env || {}
+  const taroEnv = {}
+  const envList = ['USER_DATA_PATH']
+  envList.forEach(key => taroEnv[key] = wxEnv[key])
+  taro.env = taroEnv
+}
+
 export default function initNativeApi (taro) {
   processApis(taro)
   taro.request = link.request.bind(link)
   taro.addInterceptor = link.addInterceptor.bind(link)
+  taro.cleanInterceptors = link.cleanInterceptors.bind(link)
   taro.getCurrentPages = getCurrentPages
   taro.getApp = getApp
   taro.requirePlugin = requirePlugin
@@ -229,4 +267,5 @@ export default function initNativeApi (taro) {
   taro.pxTransform = pxTransform.bind(taro)
   taro.canIUseWebp = canIUseWebp
   wxCloud(taro)
+  wxEnvObj(taro)
 }

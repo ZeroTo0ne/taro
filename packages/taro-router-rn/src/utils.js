@@ -4,7 +4,9 @@ export const HEADER_CONFIG_MAP = {
   navigationBarBackgroundColor: 'backgroundColor', // 导航栏背景颜色
   enablePullDownRefresh: 'enablePullDownRefresh', // 是否全局开启下拉刷新，暂时放这里吧
   navigationStyle: 'navigationStyle', // 导航栏样式，仅支持以下值：default 默认样式 custom 自定义导航栏，只保留右上角胶囊按钮
-  disableScroll: 'disableScroll' // 设置为 true 则页面整体不能上下滚动；只在页面配置中有效，无法在 app.json 中设置该项
+  disableScroll: 'disableScroll', // 设置为 true 则页面整体不能上下滚动；只在页面配置中有效，无法在 app.json 中设置该项
+  backgroundColor: 'backgroundColor', // 容器背景颜色
+  stackNavigatorOptions: 'stackNavigatorOptions' // 支持直接透传createStackNavigator方法的配置
 }
 
 export function getNavigationOptions (config = {}) {
@@ -116,4 +118,38 @@ export const createCallbackManager = () => {
     count,
     trigger
   }
+}
+
+/**
+ * Loosely validate a URL `string`.
+ *
+ * @param {String} string
+ * @return {Boolean}
+ */
+
+export function isUrl (string) {
+  const protocolAndDomainRE = /^(?:\w+:)?\/\/(\S+)$/
+
+  const localhostDomainRE = /^localhost[:?\d]*(?:[^:?\d]\S*)?$/
+  const nonLocalhostDomainRE = /^[^\s.]+\.\S{2,}$/
+  if (typeof string !== 'string') {
+    return false
+  }
+
+  let match = string.match(protocolAndDomainRE)
+  if (!match) {
+    return false
+  }
+
+  let everythingAfterProtocol = match[1]
+  if (!everythingAfterProtocol) {
+    return false
+  }
+
+  if (localhostDomainRE.test(everythingAfterProtocol) ||
+    nonLocalhostDomainRE.test(everythingAfterProtocol)) {
+    return true
+  }
+
+  return false
 }

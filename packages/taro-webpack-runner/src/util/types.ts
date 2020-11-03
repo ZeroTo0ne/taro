@@ -8,7 +8,7 @@ export interface Option {
   [key: string]: any;
 };
 
-type TogglableOptions<T = Option> = {
+export type TogglableOptions<T = Option> = {
   enable?: boolean;
   config?: T;
 }
@@ -31,6 +31,18 @@ export interface Chain {
   [key: string]: any;
 }
 
+export interface IOption {
+  [key: string]: any
+}
+
+export interface IH5RouterConfig {
+  mode?: 'hash' | 'browser' | 'multi',
+  customRoutes?: IOption,
+  basename?: string,
+  lazyload?: boolean | ((pagename: string) => boolean)
+  renamePagename?: (pagename: string) => string
+}
+
 export interface TaroH5Config {
 
   webpack: ((webpackConfig: webpack.Configuration, webpack) => webpack.Configuration) | webpack.Configuration
@@ -40,13 +52,10 @@ export interface TaroH5Config {
   alias: Option;
   entry: webpack.Entry;
   output: webpack.Output;
-  router?: {
-    mode?: 'hash' | 'browser';
-    customRoutes?: Option;
-    basename?: string;
-  };
+  router?: IH5RouterConfig;
   devServer: webpackDevServer.Configuration;
   enableSourceMap: boolean;
+  sourceMapType?: 'none' | 'eval' | 'cheap-eval-source-map' | 'cheap-module-eval-source-map' | 'eval-source-map' | 'cheap-source-map' | 'cheap-module-source-map' | 'inline-cheap-source-map' | 'inline-cheap-module-source-map' | 'source-map' | 'inline-source-map' | 'hidden-source-map' | 'nosources-source-map';
   enableExtract: boolean;
 
   cssLoaderOption: Option;
@@ -58,6 +67,7 @@ export interface TaroH5Config {
   fontUrlLoaderOption: Option;
   imageUrlLoaderOption: Option;
   miniCssExtractPluginOption: Option;
+  miniCssExtractLoaderOption: Option;
   esnextModules: string[];
 
   module?: {
@@ -69,6 +79,7 @@ export interface TaroPlugins {
   babel: Option;
   csso?: TogglableOptions;
   uglify?: TogglableOptions;
+  sass?: Option;
 }
 
 export interface CopyOptions {
@@ -101,5 +112,6 @@ export interface TaroBaseConfig {
 
 export interface BuildConfig extends TaroBaseConfig, TaroH5Config {
   isWatch: boolean;
-  port?: number
+  port?: number;
+  homePage?: [string, string]
 };

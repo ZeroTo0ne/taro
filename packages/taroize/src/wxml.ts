@@ -5,9 +5,11 @@ import traverse, { NodePath, Visitor } from 'babel-traverse'
 import { buildTemplate, DEFAULT_Component_SET, buildImportStatement, buildBlockElement, parseCode, codeFrameError, isValidVarName } from './utils'
 import { specialEvents } from './events'
 import { parseTemplate, parseModule } from './template'
-import { usedComponents, errors, globals } from './global'
-import { reserveKeyWords } from './constant'
-import { parseExpression } from 'babylon'
+import { usedComponents, errors, globals, THIRD_PARTY_COMPONENTS } from './global'
+import { reserveKeyWords, templateSyntaxPrefix, templateSyntax, templateSyntaxThroughPrefix } from './constant'
+import { parse as parseFile } from 'babylon'
+import { getCacheWxml, saveCacheWxml } from './cache'
+const { prettyPrint } = require('html')
 
 const allCamelCase = (str: string) =>
   str.charAt(0).toUpperCase() + camelCase(str.substr(1))
@@ -69,22 +71,14 @@ export interface Imports {
   wxs?: boolean
 }
 
-const WX_IF = 'wx:if'
-const WX_ELSE_IF = 'wx:elif'
-const WX_FOR = 'wx:for'
-const WX_FOR_ITEM = 'wx:for-item'
-const WX_FOR_INDEX = 'wx:for-index'
-const WX_KEY = 'wx:key'
+export interface Wxml {
+  wxses: WXS[]
+  wxml?: t.Node
+  imports: Imports[]
+  refIds: Set<string>
+}
 
-export const wxTemplateCommand = [
-  WX_IF,
-  WX_ELSE_IF,
-  WX_FOR,
-  WX_FOR_ITEM,
-  WX_FOR_INDEX,
-  WX_KEY,
-  'wx:else'
-]
+export let templateCommand
 
 function buildElement (
   name: string,
@@ -123,21 +117,24 @@ export const createWxmlVistor = (
       }
     }
   }
+
+  const renameJSXKey = (path: NodePath<t.JSXIdentifier>) => {
+    const nodeName = path.node.name
+    if (path.parentPath.isJSXAttribute()) {
+      if (nodeName === templateSyntax.KEY) {
+        path.replaceWith(t.jSXIdentifier('key'))
+      }
+      if (nodeName.startsWith(templateSyntaxPrefix) && !templateCommand.includes(nodeName)) {
+        // tslint:disable-next-line
+        console.log(`未知 wx 作用域属性： ${nodeName}，该属性会被移除掉。`)
+        path.parentPath.remove()
+      }
+    }
+  }
+
   return {
     JSXAttribute: jsxAttrVisitor,
-    JSXIdentifier (path) {
-      const nodeName = path.node.name
-      if (path.parentPath.isJSXAttribute()) {
-        if (nodeName === WX_KEY) {
-          path.replaceWith(t.jSXIdentifier('key'))
-        }
-        if (nodeName.startsWith('wx:') && !wxTemplateCommand.includes(nodeName)) {
-          // tslint:disable-next-line
-          console.log(`未知 wx 作用域属性： ${nodeName}，该属性会被移除掉。`)
-          path.parentPath.remove()
-        }
-      }
-    },
+    JSXIdentifier: renameJSXKey,
     JSXElement: {
       enter (path: NodePath<t.JSXElement>) {
         const openingElement = path.get('openingElement')
@@ -159,7 +156,8 @@ export const createWxmlVistor = (
               refIds.add(p.node.name)
             }
           },
-          JSXAttribute: jsxAttrVisitor
+          JSXAttribute: jsxAttrVisitor,
+          JSXIdentifier: renameJSXKey
         })
         const slotAttr = attrs.find(a => a.node.name.name === 'slot')
         if (slotAttr) {
@@ -236,9 +234,9 @@ export const createWxmlVistor = (
             let usedTemplate = new Set<string>()
 
             traverse(ast, {
-              JSXIdentifier (p) {
-                const node = p.node
-                if (node.name.endsWith('Tmpl') && node.name.length > 4 && p.parentPath.isJSXOpeningElement()) {
+              JSXIdentifier (path) {
+                const node = path.node
+                if (node.name.endsWith('Tmpl') && node.name.length > 4 && path.parentPath.isJSXOpeningElement()) {
                   usedTemplate.add(node.name)
                 }
               }
@@ -288,12 +286,29 @@ export const createWxmlVistor = (
   } as Visitor
 }
 
-export function parseWXML (dirPath: string, wxml?: string, parseImport?: boolean): {
-  wxses: WXS[]
-  wxml?: t.Node
-  imports: Imports[]
-  refIds: Set<string>
-} {
+export function parseWXML (dirPath: string, wxml?: string, parseImport?: boolean): Wxml {
+  let parseResult = getCacheWxml(dirPath)
+  templateCommand = [
+    templateSyntax.IF,
+    templateSyntax.ELSE_IF,
+    templateSyntax.FOR,
+    templateSyntax.FOR_ITEM,
+    templateSyntax.FOR_INDEX,
+    templateSyntax.KEY,
+    templateSyntax.ELSE
+  ]
+  if (parseResult) {
+    return parseResult
+  }
+  try {
+    wxml = prettyPrint(wxml, {
+      max_char: 0,
+      indent_char: 0,
+      unformatted: ['text', 'wxs']
+    })
+  } catch (error) {
+    //
+  }
   if (!parseImport) {
     errors.length = 0
     usedComponents.clear()
@@ -330,13 +345,14 @@ export function parseWXML (dirPath: string, wxml?: string, parseImport?: boolean
       refIds.delete(id)
     }
   })
-
-  return {
+  parseResult = {
     wxses,
     imports,
     wxml: hydrate(ast),
     refIds
   }
+  saveCacheWxml(dirPath, parseResult)
+  return parseResult
 }
 
 function getWXS (attrs: t.JSXAttribute[], path: NodePath<t.JSXElement>, imports: Imports[]): WXS {
@@ -419,11 +435,11 @@ function transformLoop (
     return
   }
   const attrs = jsxElement.get('attributes').map(a => a.node)
-  const wxForItem = attrs.find(a => a.name.name === WX_FOR_ITEM)
+  const wxForItem = attrs.find(a => a.name.name === templateSyntax.FOR_ITEM)
   const hasSinglewxForItem = wxForItem && wxForItem.value && t.isJSXExpressionContainer(wxForItem.value)
-  if (hasSinglewxForItem || name === WX_FOR || name === 'wx:for-items') {
+  if (hasSinglewxForItem || name === templateSyntax.FOR || name === templateSyntax.FOR_ITEMS) {
     if (!value || !t.isJSXExpressionContainer(value)) {
-      throw new Error('wx:for 的值必须使用 "{{}}"  包裹')
+      throw new Error(`${templateSyntax.FOR} 的值必须使用 "{{}}"  包裹`)
     }
     attr.remove()
     let item = t.stringLiteral('item')
@@ -433,16 +449,16 @@ function transformLoop (
       .get('attributes')
       .forEach(p => {
         const node = p.node
-        if (node.name.name === WX_FOR_ITEM) {
+        if (node.name.name === templateSyntax.FOR_ITEM) {
           if (!node.value || !t.isStringLiteral(node.value)) {
-            throw new Error(WX_FOR_ITEM + ' 的值必须是一个字符串')
+            throw new Error(templateSyntax.FOR_ITEM + ' 的值必须是一个字符串')
           }
           item = node.value
           p.remove()
         }
-        if (node.name.name === WX_FOR_INDEX) {
+        if (node.name.name === templateSyntax.FOR_INDEX) {
           if (!node.value || !t.isStringLiteral(node.value)) {
-            throw new Error(WX_FOR_INDEX + ' 的值必须是一个字符串')
+            throw new Error(templateSyntax.FOR_INDEX + ' 的值必须是一个字符串')
           }
           index = node.value
           p.remove()
@@ -482,7 +498,7 @@ function transformIf (
   jsx: NodePath<t.JSXElement>,
   value: AttrValue
 ) {
-  if (name !== WX_IF) {
+  if (name !== templateSyntax.IF) {
     return
   }
   const conditions: Condition[] = []
@@ -494,13 +510,13 @@ function transformIf (
   }
   if (value === null || !t.isJSXExpressionContainer(value)) {
     // tslint:disable-next-line
-    console.error('wx:if 的值需要用双括号 `{{}}` 包裹它的值')
+    console.error(`${templateSyntax.IF} 的值需要用双括号 \`{{}}\` 包裹它的值`)
     if (value && t.isStringLiteral(value)) {
       value = t.jSXExpressionContainer(buildTemplate(value.value))
     }
   }
   conditions.push({
-    condition: WX_IF,
+    condition: templateSyntax.IF,
     path: jsx,
     tester: value as t.JSXExpressionContainer
   })
@@ -542,24 +558,29 @@ function handleConditions (conditions: Condition[]) {
     const lastLength = conditions.length - 1
     const lastCon = conditions[lastLength]
     let lastAlternate: t.Expression = cloneDeep(lastCon.path.node)
-    if (lastCon.condition === WX_ELSE_IF) {
-      lastAlternate = t.logicalExpression(
-        '&&',
-        lastCon.tester.expression,
-        lastAlternate
-      )
-    }
-    const node = conditions
-      .slice(0, lastLength)
-      .reduceRight((acc: t.Expression, condition) => {
-        return t.conditionalExpression(
-          condition.tester.expression,
-          cloneDeep(condition.path.node),
-          acc
+    try {
+      if (lastCon.condition === templateSyntax.ELSE_IF) {
+        lastAlternate = t.logicalExpression(
+          '&&',
+          lastCon.tester.expression,
+          lastAlternate
         )
-      }, lastAlternate)
-    conditions[0].path.replaceWith(t.jSXExpressionContainer(node))
-    conditions.slice(1).forEach(c => c.path.remove())
+      }
+      const node = conditions
+        .slice(0, lastLength)
+        .reduceRight((acc: t.Expression, condition) => {
+          return t.conditionalExpression(
+            condition.tester.expression,
+            cloneDeep(condition.path.node),
+            acc
+          )
+        }, lastAlternate)
+      conditions[0].path.replaceWith(t.jSXExpressionContainer(node))
+      conditions.slice(1).forEach(c => c.path.remove())
+    } catch (error) {
+      // tslint:disable-next-line
+      console.error(`${templateSyntax.ELSE_IF} 的值需要用双括号 \`{{}}\` 包裹它的值`)
+    }
   }
 }
 
@@ -576,10 +597,10 @@ function findWXIfProps (
         const attr = path.node
         if (t.isJSXIdentifier(attr.name)) {
           const name = attr.name.name
-          if (name === WX_IF) {
+          if (name === templateSyntax.IF) {
             return true
           }
-          const match = name.match(/wx:else|wx:elif/)
+          const match = name.match(new RegExp(`${templateSyntax.ELSE}|${templateSyntax.ELSE_IF}`))
           if (match) {
             path.remove()
             matches = {
@@ -610,7 +631,7 @@ function parseNode (node: AllKindNode, tagName?: string) {
 }
 
 function parseElement (element: Element): t.JSXElement {
-  const tagName = t.jSXIdentifier(allCamelCase(element.tagName))
+  const tagName = t.jSXIdentifier(THIRD_PARTY_COMPONENTS.has(element.tagName) ? element.tagName : allCamelCase(element.tagName))
   if (DEFAULT_Component_SET.has(tagName.name)) {
     usedComponents.add(tagName.name)
   }
@@ -720,7 +741,7 @@ function parseAttribute (attr: Attribute) {
     const { type, content } = parseContent(value)
 
     if (type === 'raw') {
-      jsxValue = t.stringLiteral(content)
+      jsxValue = t.stringLiteral(content.replace(/\"/g, `'`))
     } else {
       let expr: t.Expression
       try {
@@ -729,26 +750,14 @@ function parseAttribute (attr: Attribute) {
         const pureContent = content.slice(1, content.length - 1)
         if (reserveKeyWords.has(pureContent) && type !== 'raw') {
           const err = `转换模板参数： \`${key}: ${value}\` 报错: \`${pureContent}\` 是 JavaScript 保留字，请不要使用它作为值。`
-          if (key === WX_KEY) {
+          if (key === templateSyntax.KEY) {
             expr = t.stringLiteral('')
           } else {
             throw new Error(err)
           }
-        } else if (content.includes(':')) {
-          const [ key, value ] = pureContent.split(':')
-          expr = t.objectExpression([t.objectProperty(t.stringLiteral(key), parseExpression(value))])
-        } else if (content.includes('...') && content.includes(',')) {
-          const objExpr = content.slice(1, content.length - 1).split(',')
-          const props: (t.SpreadProperty | t.ObjectProperty)[] = []
-          for (const str of objExpr) {
-            const s = str.trim()
-            if (s.includes('...')) {
-              props.push(t.spreadProperty(t.identifier(s.slice(3))))
-            } else {
-              props.push(t.objectProperty(t.identifier(s), t.identifier(s)))
-            }
-          }
-          expr = t.objectExpression(props)
+        } else if (content.includes(':') || (content.includes('...') && content.includes(','))) {
+          const file = parseFile(`var a = ${attr.value!.slice(1, attr.value!.length - 1)}`, { plugins: ['objectRestSpread'] })
+          expr = file.program.body[0].declarations[0].init
         } else {
           const err = `转换模板参数： \`${key}: ${value}\` 报错`
           throw new Error(err)
@@ -770,7 +779,7 @@ function parseAttribute (attr: Attribute) {
     )
   }
 
-  if (key.startsWith('catch') && value && value === 'true') {
+  if (key.startsWith('catch') && value && (value === 'true' || value.trim() === '')) {
     jsxValue = t.jSXExpressionContainer(
       t.memberExpression(t.thisExpression(), t.identifier('privateStopNoop'))
     )
@@ -781,8 +790,8 @@ function parseAttribute (attr: Attribute) {
 
 function handleAttrKey (key: string) {
   if (
-    key.startsWith('wx:') ||
-    key.startsWith('wx-') ||
+    key.startsWith(templateSyntaxPrefix) ||
+    key.startsWith(templateSyntaxThroughPrefix) ||
     key.startsWith('data-')
   ) {
     return key

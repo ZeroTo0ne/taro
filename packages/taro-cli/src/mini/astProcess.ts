@@ -4,9 +4,10 @@ import * as path from 'path'
 import * as babel from 'babel-core'
 import * as t from 'babel-types'
 import generate from 'babel-generator'
-import traverse from 'babel-traverse'
+import traverse, { NodePath } from 'babel-traverse'
 import * as _ from 'lodash'
 import { Config as IConfig } from '@tarojs/taro'
+import getHashName from '../util/hash'
 
 const template = require('babel-template')
 
@@ -36,7 +37,10 @@ import {
   isAliasPath,
   replaceAliasPath,
   traverseObjectNode,
-  isQuickAppPkg
+  isQuickappPkg,
+  getBabelConfig,
+  extnameExpRegOf,
+  generateAlipayPath
 } from '../util'
 import {
   convertObjectToAstExpression,
@@ -45,6 +49,7 @@ import {
 } from '../util/astConvert'
 import babylonConfig from '../config/babylon'
 import { getExactedNpmFilePath, getNotExistNpmList } from '../util/npmExact'
+import { excludeReplaceTaroFrameworkPkgs } from '../util/resolve_npm_files'
 
 import { IComponentObj } from './interface'
 import {
@@ -54,17 +59,28 @@ import {
 import { processStyleUseCssModule } from './compileStyle'
 import { QUICKAPP_SPECIAL_COMPONENTS } from './constants'
 
-function createCssModuleMap (styleFilePath, tokens) {
+function generateCssModuleMapFilename (styleFilePath) {
   const {
     sourceDir,
-    outputDir
+    outputDir,
+    nodeModulesPath,
+    npmOutputDir
   } = getBuildData()
   const cssModuleMapFilename = path.basename(styleFilePath) + '.map.js'
-  const cssModuleMapFile = path.join(path.dirname(styleFilePath), cssModuleMapFilename).replace(sourceDir, outputDir)
+  let cssModuleMapFile
+  if (NODE_MODULES_REG.test(styleFilePath)) {
+    cssModuleMapFile = path.join(path.dirname(styleFilePath), cssModuleMapFilename).replace(nodeModulesPath, npmOutputDir)
+  } else {
+    cssModuleMapFile = path.join(path.dirname(styleFilePath), cssModuleMapFilename).replace(sourceDir, outputDir)
+  }
+  return cssModuleMapFile
+}
+
+function createCssModuleMap (styleFilePath, tokens) {
+  const cssModuleMapFile = generateCssModuleMapFilename(styleFilePath)
   printLog(processTypeEnum.GENERATE, 'CSS Modules map', cssModuleMapFile)
   fs.ensureDirSync(path.dirname(cssModuleMapFile))
   fs.writeFileSync(cssModuleMapFile, `module.exports = ${JSON.stringify(tokens, null, 2)};\n`)
-  return cssModuleMapFile
 }
 
 interface IAnalyzeImportUrlOptions {
@@ -95,8 +111,11 @@ function analyzeImportUrl ({
     npmOutputDir,
     sourceDir,
     outputDir,
-    npmConfig
+    npmConfig,
+    projectConfig,
+    buildAdapter
   } = getBuildData()
+  const publicPath = (projectConfig.weapp || ({} as any)).publicPath
   if (value.indexOf('.') === 0) {
     let importPath = path.resolve(path.dirname(sourceFilePath), value)
     importPath = resolveScriptPath(importPath)
@@ -112,6 +131,7 @@ function analyzeImportUrl ({
         if (scriptFiles.indexOf(fPath) < 0) {
           scriptFiles.push(fPath)
         }
+        node.source.value = value.replace(valueExtname, '.js')
       } else if (REG_JSON.test(valueExtname)) {
         const vpath = path.resolve(sourceFilePath, '..', value)
         if (jsonFiles.indexOf(vpath) < 0) {
@@ -157,8 +177,11 @@ function analyzeImportUrl ({
           showPath = vpath.replace(nodeModulesPath, `/${npmConfig.name}`)
         } else {
           showPath = vpath.replace(sourceDir, '')
+          if (publicPath) {
+            const hashName = getHashName(vpath)
+            showPath = (/\/$/.test(publicPath) ? publicPath : publicPath + '/') + hashName
+          }
         }
-
         if (defaultSpecifier) {
           astPath.replaceWith(t.variableDeclaration('const', [t.variableDeclarator(t.identifier(defaultSpecifier), t.stringLiteral(showPath.replace(/\\/g, '/')))]))
         } else {
@@ -178,6 +201,9 @@ function analyzeImportUrl ({
         } else {
           outputVpath = vpath.replace(sourceDir, outputDir)
         }
+        if (buildAdapter === BUILD_TYPES.ALIPAY) {
+          outputVpath = generateAlipayPath(outputVpath)
+        }
         let relativePath = path.relative(filePath, outputVpath)
         if (vpath && vpath !== sourceFilePath) {
           if (!fs.existsSync(vpath)) {
@@ -196,7 +222,7 @@ function analyzeImportUrl ({
               scriptFiles.push(vpath)
             }
             relativePath = promoteRelativePath(relativePath)
-            relativePath = relativePath.replace(path.extname(relativePath), '.js')
+            relativePath = relativePath.replace(extnameExpRegOf(relativePath), '.js')
             node.source.value = relativePath
           }
         }
@@ -241,9 +267,11 @@ export function parseAst (
     isProduction,
     npmConfig,
     alias: pathAlias,
-    compileInclude,
-    projectConfig
+    compileConfig,
+    projectConfig,
+    quickappManifest
   } = getBuildData()
+  const publicPath = (projectConfig.weapp || {} as any).publicPath
   const notExistNpmList = getNotExistNpmList()
   const taroMiniAppFramework = `@tarojs/taro-${buildAdapter}`
   let configObj: IConfig = {}
@@ -258,12 +286,15 @@ export function parseAst (
   let hasComponentDidShow
   let hasComponentWillMount
   let hasEnablePageScroll
+  let needSetConfigFromHooks = false
+  let configFromHooks
   if (isQuickApp) {
     cannotRemoves.push(taroJsComponents)
   }
   const taroSelfComponents = new Set<string>()
   ast = babel.transformFromAst(ast, '', {
     plugins: [
+      [require('babel-plugin-preval')],
       [require('babel-plugin-danger-remove-unused-import'), { ignore: cannotRemoves }],
       [require('babel-plugin-transform-define').default, constantsReplaceList]
     ]
@@ -377,6 +408,20 @@ export function parseAst (
       }
     },
 
+    AssignmentExpression (astPath) {
+      const node = astPath.node
+      const left = node.left
+      if (t.isMemberExpression(left) && t.isIdentifier(left.object)) {
+        if (left.object.name === componentClassName
+            && t.isIdentifier(left.property)
+            && left.property.name === 'config') {
+          needSetConfigFromHooks = true
+          configFromHooks = node.right
+          configObj = traverseObjectNode(node.right, buildAdapter)
+        }
+      }
+    },
+
     ClassMethod (astPath) {
       const keyName = (astPath.get('key').node as t.Identifier).name
       if (keyName === 'componentWillMount') {
@@ -417,7 +462,9 @@ export function parseAst (
         value = replaceAliasPath(sourceFilePath, value, pathAlias)
         source.value = value
       }
-      if (isNpmPkg(value) && !isQuickAppPkg(value) && !notExistNpmList.has(value)) {
+
+      const quickappPkgs = quickappManifest ? quickappManifest.features : []
+      if (isNpmPkg(value) && !(isQuickApp && isQuickappPkg(value, quickappPkgs)) && !notExistNpmList.has(value)) {
         if (value === taroJsComponents) {
           if (isQuickApp) {
             specifiers.forEach(specifier => {
@@ -427,7 +474,6 @@ export function parseAst (
               }
             })
           }
-          taroSelfComponents.add('taro-page')
           astPath.remove()
         } else {
           let isDepComponent = false
@@ -452,7 +498,10 @@ export function parseAst (
               if (defaultSpecifier) {
                 taroImportDefaultName = defaultSpecifier
               }
-              value = taroMiniAppFramework
+              excludeReplaceTaroFrameworkPkgs.add(taroMiniAppFramework)
+              if (!Array.from(excludeReplaceTaroFrameworkPkgs).some(item => sourceFilePath.replace(/\\/g, '/').indexOf(item) >= 0)) {
+                value = taroMiniAppFramework
+              }
             } else if (value === taroJsRedux) {
               specifiers.forEach(item => {
                 if (item.type === 'ImportSpecifier') {
@@ -466,16 +515,18 @@ export function parseAst (
             if (!npmSkip) {
               source.value = getExactedNpmFilePath({
                 npmName: value,
+                sourceFilePath,
                 filePath,
                 isProduction,
                 npmConfig,
                 buildAdapter,
                 root: appPath,
                 npmOutputDir,
-                compileInclude,
+                compileConfig,
                 env: projectConfig.env || {},
-                uglify: projectConfig!.plugins!.uglify || {},
-                babelConfig: projectConfig!.plugins!.babel || {}
+                uglify: projectConfig!.plugins!.uglify || {  enable: true  },
+                babelConfig: getBabelConfig(projectConfig!.plugins!.babel) || {},
+                quickappManifest
               })
             } else {
               source.value = value
@@ -486,12 +537,14 @@ export function parseAst (
         printLog(processTypeEnum.GENERATE, '替换代码', `为文件 ${sourceFilePath} 生成 css modules`)
         const styleFilePath = path.join(path.dirname(sourceFilePath), value)
         const styleCode = fs.readFileSync(styleFilePath).toString()
-        const result = processStyleUseCssModule({
+        processStyleUseCssModule({
           css: styleCode,
           filePath: styleFilePath
+        }).then(result => {
+          const tokens = result.root.exports || {}
+          createCssModuleMap(styleFilePath, tokens)
         })
-        const tokens = result.root.exports || {}
-        const cssModuleMapFile = createCssModuleMap(styleFilePath, tokens)
+        const cssModuleMapFile = generateCssModuleMapFilename(styleFilePath)
         astPath.node.source = t.stringLiteral(astPath.node.source.value.replace(path.basename(styleFilePath), path.basename(cssModuleMapFile)))
         if (styleFiles.indexOf(styleFilePath) < 0) { // add this css file to queue
           styleFiles.push(styleFilePath)
@@ -516,7 +569,8 @@ export function parseAst (
           value = replaceAliasPath(sourceFilePath, value, pathAlias)
           args[0].value = value
         }
-        if (isNpmPkg(value) && !isQuickAppPkg(value) && !notExistNpmList.has(value)) {
+        const quickappPkgs = quickappManifest ? quickappManifest.features : []
+        if (isNpmPkg(value) && !(isQuickApp && isQuickappPkg(value, quickappPkgs)) && !notExistNpmList.has(value)) {
           if (value === taroJsComponents) {
             if (isQuickApp) {
               if (parentNode.declarations.length === 1 && parentNode.declarations[0].init) {
@@ -549,7 +603,10 @@ export function parseAst (
                   const id = parentNode.declarations[0].id
                   if (value === taroJsFramework && id.type === 'Identifier') {
                     taroImportDefaultName = id.name
-                    value = taroMiniAppFramework
+                    excludeReplaceTaroFrameworkPkgs.add(taroMiniAppFramework)
+                    if (!Array.from(excludeReplaceTaroFrameworkPkgs).some(item => sourceFilePath.replace(/\\/g, '/').indexOf(item) >= 0)) {
+                      value = taroMiniAppFramework
+                    }
                   } else if (value === taroJsRedux) {
                     const declarations = parentNode.declarations
                     declarations.forEach(item => {
@@ -571,16 +628,18 @@ export function parseAst (
               if (!npmSkip) {
                 args[0].value = getExactedNpmFilePath({
                   npmName: value,
+                  sourceFilePath,
                   filePath,
                   isProduction,
                   npmConfig,
                   buildAdapter,
                   root: appPath,
                   npmOutputDir,
-                  compileInclude,
+                  compileConfig,
                   env: projectConfig.env || {},
-                  uglify: projectConfig!.plugins!.uglify || {},
-                  babelConfig: projectConfig!.plugins!.babel || {}
+                  uglify: projectConfig!.plugins!.uglify || {  enable: true  },
+                  babelConfig: getBabelConfig(projectConfig!.plugins!.babel) || {},
+                  quickappManifest
                 })
               } else {
                 args[0].value = value
@@ -591,18 +650,15 @@ export function parseAst (
           printLog(processTypeEnum.GENERATE, '替换代码', `为文件 ${sourceFilePath} 生成 css modules`)
           const styleFilePath = path.join(path.dirname(sourceFilePath), value)
           const styleCode = fs.readFileSync(styleFilePath).toString()
-          const result = processStyleUseCssModule({
+          processStyleUseCssModule({
             css: styleCode,
             filePath: styleFilePath
+          }).then(result => {
+            const tokens = result.root.exports || {}
+            createCssModuleMap(styleFilePath, tokens)
           })
-          const tokens = result.root.exports || {}
-          const objectPropperties: t.ObjectProperty[] = []
-          for (const key in tokens) {
-            if (tokens.hasOwnProperty(key)) {
-              objectPropperties.push(t.objectProperty(t.identifier(key), t.stringLiteral(tokens[key])))
-            }
-          }
-          astPath.replaceWith(t.objectExpression(objectPropperties))
+          const cssModuleMapFile = generateCssModuleMapFilename(styleFilePath)
+          args[0].value = args[0].value.replace(path.basename(styleFilePath), path.basename(cssModuleMapFile))
           if (styleFiles.indexOf(styleFilePath) < 0) { // add this css file to queue
             styleFiles.push(styleFilePath)
           }
@@ -728,6 +784,15 @@ export function parseAst (
                   `Taro.eventCenter.off('TaroEvent:setNavigationBar')`
               )]), false, false))
             }
+            if (needSetConfigFromHooks) {
+              const classPath = astPath.findParent((p: NodePath<t.Node>) => p.isClassExpression() || p.isClassDeclaration()) as NodePath<t.ClassDeclaration>
+              classPath.node.body.body.unshift(
+                t.classProperty(
+                  t.identifier('config'),
+                  configFromHooks as t.ObjectExpression
+                )
+              )
+            }
           },
           ClassMethod (astPath) {
             if (isQuickApp) {
@@ -811,6 +876,10 @@ export function parseAst (
                       showPath = vpath.replace(nodeModulesPath, `/${npmConfig.name}`)
                     } else {
                       showPath = vpath.replace(sourceDir, '')
+                      if (publicPath) {
+                        const hashName = getHashName(vpath)
+                        showPath = (/\/$/.test(publicPath) ? publicPath : publicPath + '/') + hashName
+                      }
                     }
                     astPath.replaceWith(t.stringLiteral(showPath.replace(/\\/g, '/')))
                   } else {
@@ -839,7 +908,7 @@ export function parseAst (
                           scriptFiles.push(vpath)
                         }
                         relativePath = promoteRelativePath(relativePath)
-                        relativePath = relativePath.replace(path.extname(relativePath), '.js')
+                        relativePath = relativePath.replace(extnameExpRegOf(relativePath), '.js')
                         args[0].value = relativePath
                       }
                     }
@@ -857,16 +926,18 @@ export function parseAst (
         }
         const taroMiniAppFrameworkPath = !npmSkip ? getExactedNpmFilePath({
           npmName: taroMiniAppFramework,
+          sourceFilePath,
           filePath,
           isProduction,
           npmConfig,
           buildAdapter,
           root: appPath,
           npmOutputDir,
-          compileInclude,
+          compileConfig,
           env: projectConfig.env || {},
-          uglify: projectConfig!.plugins!.uglify || {},
-          babelConfig: projectConfig!.plugins!.babel || {}
+          uglify: projectConfig!.plugins!.uglify || {  enable: true  },
+          babelConfig: getBabelConfig(projectConfig!.plugins!.babel) || {},
+          quickappManifest
         }) : taroMiniAppFramework
         switch (type) {
           case PARSE_AST_TYPE.ENTRY:
@@ -877,6 +948,11 @@ export function parseAst (
               pxTransformConfig[DEVICE_RATIO_NAME] = projectConfig.deviceRatio
             }
             if (isQuickApp) {
+              if (!taroImportDefaultName) {
+                node.body.unshift(
+                  template(`import Taro from '${taroMiniAppFrameworkPath}'`, babylonConfig as any)() as any
+                )
+              }
               node.body.push(template(`export default require('${taroMiniAppFrameworkPath}').default.createApp(${exportVariableName})`, babylonConfig as any)() as any)
             } else {
               node.body.push(template(`App(require('${taroMiniAppFrameworkPath}').default.createApp(${exportVariableName}))`, babylonConfig as any)() as any)
@@ -884,10 +960,15 @@ export function parseAst (
             node.body.push(template(`Taro.initPxTransform(${JSON.stringify(pxTransformConfig)})`, babylonConfig as any)() as any)
             break
           case PARSE_AST_TYPE.PAGE:
-            if (buildAdapter === BUILD_TYPES.WEAPP || buildAdapter === BUILD_TYPES.QQ) {
+            if (buildAdapter === BUILD_TYPES.WEAPP || buildAdapter === BUILD_TYPES.QQ || buildAdapter === BUILD_TYPES.SWAN) {
               node.body.push(template(`Component(require('${taroMiniAppFrameworkPath}').default.createComponent(${exportVariableName}, true))`, babylonConfig as any)() as any)
             } else if (isQuickApp) {
-              const pagePath = sourceFilePath.replace(sourceDir, '').replace(/\\/, '/').replace(path.extname(sourceFilePath), '')
+              const pagePath = sourceFilePath.replace(sourceDir, '').replace(/\\/g, '/').replace(extnameExpRegOf(sourceFilePath), '')
+              if (!taroImportDefaultName) {
+                node.body.unshift(
+                  template(`import Taro from '${taroMiniAppFrameworkPath}'`, babylonConfig as any)() as any
+                )
+              }
               node.body.push(template(`export default require('${taroMiniAppFrameworkPath}').default.createComponent(${exportVariableName}, '${pagePath}')`, babylonConfig as any)() as any)
             } else {
               node.body.push(template(`Page(require('${taroMiniAppFrameworkPath}').default.createComponent(${exportVariableName}, true))`, babylonConfig as any)() as any)
@@ -895,6 +976,11 @@ export function parseAst (
             break
           case PARSE_AST_TYPE.COMPONENT:
             if (isQuickApp) {
+              if (!taroImportDefaultName) {
+                node.body.unshift(
+                  template(`import Taro from '${taroMiniAppFrameworkPath}'`, babylonConfig as any)() as any
+                )
+              }
               node.body.push(template(`export default require('${taroMiniAppFrameworkPath}').default.createComponent(${exportVariableName})`, babylonConfig as any)() as any)
             } else {
               node.body.push(template(`Component(require('${taroMiniAppFrameworkPath}').default.createComponent(${exportVariableName}))`, babylonConfig as any)() as any)
@@ -906,6 +992,11 @@ export function parseAst (
       }
     }
   })
+
+  if (isQuickApp && type === PARSE_AST_TYPE.PAGE) {
+    taroSelfComponents.add('taro-page')
+  }
+
   return {
     code: generate(ast).code,
     styleFiles,
@@ -930,6 +1021,7 @@ export function parseComponentExportAst (ast: t.File, componentName: string, com
       [require('babel-plugin-transform-define').default, constantsReplaceList]
     ]
   }).ast as t.File
+  componentName = componentName.split('|')[1] || componentName
   traverse(ast, {
     ExportNamedDeclaration (astPath) {
       const node = astPath.node

@@ -29,16 +29,16 @@ module.exports = {
       },
       JSXAttribute (node) {
         if (renderRE.test(node.name.name)) {
-          if (node.value.type !== 'JSXExpressionContainer') {
+          if (node.value && node.value.type !== 'JSXExpressionContainer') {
             context.report({
-              message: '以 render 开头命名的 props 只能传入单个 JSX 元素',
+              message: '以 render 开头命名的 props 只能传入单个 JSX 元素或箭头函数',
               node
             })
             return
           }
-          if (node.value.expression.type !== 'JSXElement') {
+          if (node.value.expression.type !== 'JSXElement' && node.value.expression.type !== 'ArrowFunctionExpression') {
             context.report({
-              message: '以 render 开头命名的 props 只能传入单个 JSX 元素',
+              message: '以 render 开头命名的 props 只能传入单个 JSX 元素或箭头函数',
               node
             })
           }

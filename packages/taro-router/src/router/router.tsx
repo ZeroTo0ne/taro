@@ -1,15 +1,17 @@
-import Taro, { Component } from '@tarojs/taro-h5';
-import Nerv from 'nervjs';
-import invariant from 'invariant';
-import toPairs from 'lodash/toPairs';
-import assign from 'lodash/assign';
+import Taro from '@tarojs/taro-h5'
+import invariant from 'invariant'
+import assign from 'lodash/assign'
+import toPairs from 'lodash/toPairs'
+import Nerv from 'nervjs'
 
-import Route from './route';
-import * as Types from '../utils/types';
+import * as Types from '../utils/types'
+import Route from './route'
 
 interface Props {
   history: Types.History;
+  mode: 'multi' | 'hash' | 'browser';
   routes: Types.RouteObj[];
+  tabBar?: Types.ITabBar;
   children?: any[];
   customRoutes: Types.CustomRoutes;
 }
@@ -22,7 +24,7 @@ interface State {
 type OriginalRoute = string;
 type MappedRoute = string;
 
-class Router extends Component<Props, State> {
+class Router extends Taro.Component<Props, State> {
   unlisten: () => void;
   lastLocation: Types.Location;
   currentPages: any[] = [];
@@ -44,29 +46,48 @@ class Router extends Component<Props, State> {
     // 找出匹配的路由组件
     const originalPathname = location.path;
     let pathname = originalPathname
-    const foundRoute = this.customRoutes.find(([originalRoute, mappedRoute]) => {
-      return originalPathname === mappedRoute
-    })
-    if (foundRoute) {
-      pathname = foundRoute[0]
+
+    if (this.props.mode === 'multi') {
+      return this.props.routes[0]
+    } else {
+      const foundRoute = this.customRoutes.filter(([originalRoute, mappedRoute]) => {
+        return originalPathname === mappedRoute
+      })
+      if (foundRoute.length) {
+        pathname = foundRoute[0][0]
+      }
+      const matchedRoute = this.props.routes.filter(({path, isIndex}) => {
+        if (isIndex && pathname === '/') return true;
+        return pathname === path;
+      })
+      if (!matchedRoute[0] && Taro['_$app'] && Taro['_$app'].componentDidNotFound) {
+        Taro['_$app'].componentDidNotFound.call(Taro['_$app'], {
+          path: pathname,
+          query: location.params
+        })
+      }
+
+      invariant(matchedRoute[0], `Can not find proper registered route for '${pathname}'`)
+      return matchedRoute[0]!
     }
-    const matchedRoute = this.props.routes.find(({path, isIndex}) => {
-      if (isIndex && pathname === '/') return true;
-      return pathname === path;
-    })
-
-    invariant(matchedRoute, `Can not find proper registered route for '${pathname}'`)
-
-    return matchedRoute!
   }
 
-  push (toLocation: Types.Location) {
+  isTabBar (path: string) {
+    const tabBar = this.props.tabBar
+    if (path && tabBar && tabBar.list && tabBar.list instanceof Array) {
+      return tabBar.list.findIndex(e => e.pagePath === path) !== -1
+    }
+    return false
+  }
+
+  push (toLocation: Types.Location, isTabBar = false) {
     const routeStack: Types.RouteObj[] = [...this.state.routeStack]
     const matchedRoute = this.computeMatch(toLocation)
     routeStack.forEach(v => { v.isRedirect = false })
     routeStack.push(assign({}, matchedRoute, {
       key: toLocation.state.key,
-      isRedirect: false
+      isRedirect: false,
+      isTabBar
     }))
     this.setState({ routeStack, location: toLocation })
   }
@@ -101,12 +122,35 @@ class Router extends Component<Props, State> {
     this.setState({ routeStack, location: toLocation })
   }
 
-  collectComponent = (comp, k) => {
-    this.currentPages[k] = comp
+  switch (toLocation: Types.Location, isTabBar = false) {
+    const routeStack: Types.RouteObj[] = [...this.state.routeStack]
+    const matchedRoute = this.computeMatch(toLocation)
+    const index = routeStack.findIndex(e => e.path === toLocation.path)
+    if (!this.isTabBar(routeStack[routeStack.length - 1].path)) {
+      routeStack.splice(-1, 1, assign({}, matchedRoute, {
+        key: toLocation.state.key,
+        isRedirect: true,
+        isTabBar
+      }))
+    } else if (index === -1) {
+      routeStack.forEach(v => { v.isRedirect = false })
+      routeStack.push(assign({}, matchedRoute, {
+        key: toLocation.state.key,
+        isRedirect: false,
+        isTabBar
+      }))
+    } else {
+      toLocation.state.key = routeStack[index].key || ''
+    }
+    this.setState({ routeStack, location: toLocation })
   }
 
-  componentWillMount () {
-    const { history, customRoutes } = this.props
+  collectComponent = (comp, index: string) => {
+    this.currentPages[Number(index) || 0] = comp
+  }
+
+  componentDidMount () {
+    const { history, customRoutes, mode } = this.props
 
     this.mountApis()
     this.customRoutes = toPairs(customRoutes)
@@ -116,12 +160,16 @@ class Router extends Component<Props, State> {
       toLocation,
       action
     }) => {
-      if (action === "PUSH") {
-        this.push(toLocation);
-      } else if (action === "POP") {
+      if (action === "POP") {
         this.pop(toLocation, fromLocation);
+      } else if (this.isTabBar(toLocation.path)) {
+        this.switch(toLocation, true);
       } else {
-        this.replace(toLocation);
+        if (action === "PUSH") {
+          this.push(toLocation);
+        } else {
+          this.replace(toLocation);
+        }
       }
 
       this.lastLocation = history.location
@@ -130,22 +178,37 @@ class Router extends Component<Props, State> {
       })
     })
     this.lastLocation = history.location
-    this.push(this.lastLocation)
+    this.push(this.lastLocation, this.isTabBar(this.lastLocation.path))
+    if (mode === 'multi') {
+      this.unlisten()
+    }
+  }
+
+  componentWillUpdate (nextProps, nextState) {
+    if (Taro._$router) {
+      this.currentPages.length = Number(Taro._$router.state.key) + 1
+    }
+  }
+
+  componentDidShow () {
+    if (Taro._$router) {
+      this.currentPages.length = Number(Taro._$router.state.key) + 1
+    }
   }
 
   componentWillUnmount () {
+    const { mode } = this.props
+    if (mode === 'multi') return
     this.unlisten()
   }
 
   render () {
-    const router = this
     const currentLocation = Taro._$router
-    router.currentPages.length = this.state.routeStack.length
     return (
       <div
         className="taro_router"
-        style={"min-height: 100%"}>
-        {this.state.routeStack.map(({ path, componentLoader, isIndex, key, isRedirect }, k) => {
+        style={{ height: '100%' }}>
+        {this.state.routeStack.map(({ path, componentLoader, isIndex, isTabBar, key, isRedirect }, k) => {
           return (
             <Route
               path={path}
@@ -154,6 +217,7 @@ class Router extends Component<Props, State> {
               isIndex={isIndex}
               key={key}
               k={k}
+              isTabBar={isTabBar}
               isRedirect={isRedirect}
               collectComponent={this.collectComponent}
             />

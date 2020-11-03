@@ -9,27 +9,31 @@ import {
 const RequestQueue = {
   MAX_REQUEST: 5,
   queue: [],
+  pendingQueue: [],
+
   request (options) {
-    this.push(options)
-    // 返回request task
+    this.queue.push(options)
     return this.run()
   },
 
-  push (options) {
-    this.queue.push(options)
-  },
-
   run () {
-    if (!this.queue.length) {
-      return
-    }
-    if (this.queue.length <= this.MAX_REQUEST) {
-      let options = this.queue.shift()
-      let completeFn = options.complete
-      options.complete = () => {
-        completeFn && completeFn.apply(options, [...arguments])
+    if (!this.queue.length) return
+
+    while (this.pendingQueue.length < this.MAX_REQUEST) {
+      const options = this.queue.shift()
+      let successFn = options.success
+      let failFn = options.fail
+      options.success = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
         this.run()
+        successFn && successFn.apply(options, args)
       }
+      options.fail = (...args) => {
+        this.pendingQueue = this.pendingQueue.filter(item => item !== options)
+        this.run()
+        failFn && failFn.apply(options, args)
+      }
+      this.pendingQueue.push(options)
       return swan.request(options)
     }
   }
@@ -153,7 +157,14 @@ function processApis (taro) {
 }
 
 function pxTransform (size) {
-  const { designWidth, deviceRatio } = this.config
+  const {
+    designWidth = 750,
+    deviceRatio = {
+      '640': 2.34 / 2,
+      '750': 1,
+      '828': 1.81 / 2
+    }
+  } = this.config || {}
   if (!(designWidth in deviceRatio)) {
     throw new Error(`deviceRatio 配置中不存在 ${designWidth} 的设置！`)
   }
@@ -162,8 +173,10 @@ function pxTransform (size) {
 
 export default function initNativeApi (taro) {
   processApis(taro)
+  taro.requestPayment = taro.requestPolymerPayment
   taro.request = link.request.bind(link)
   taro.addInterceptor = link.addInterceptor.bind(link)
+  taro.cleanInterceptors = link.cleanInterceptors.bind(link)
   taro.getCurrentPages = getCurrentPages
   taro.getApp = getApp
   taro.initPxTransform = initPxTransform.bind(taro)

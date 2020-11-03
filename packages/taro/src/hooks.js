@@ -1,5 +1,9 @@
-import { isFunction, isUndefined, isArray, isNullOrUndef, defer } from './util'
+import { isFunction, isUndefined, isArray, isNullOrUndef, defer, objectIs } from './util'
 import { Current } from './current'
+
+export function forceUpdateCallback () {
+  //
+}
 
 function getHooks (index) {
   if (Current.current === null) {
@@ -22,13 +26,94 @@ export function useState (initialState) {
     hook.state = [
       initialState,
       (action) => {
-        hook.state[0] = isFunction(action) ? action(hook.state[0]) : action
+        const nextState = isFunction(action) ? action(hook.state[0]) : action
+        if (hook.state[0] === nextState) return
+        hook.state[0] = nextState
         hook.component._disable = false
-        hook.component.setState({})
+        hook.component.setState({}, forceUpdateCallback)
       }
     ]
   }
   return hook.state
+}
+
+function usePageLifecycle (callback, lifecycle) {
+  const hook = getHooks(Current.index++)
+
+  if (!hook.marked) {
+    hook.marked = true
+    hook.component = Current.current
+    hook.callback = callback
+
+    const component = hook.component
+    const originalLifecycle = component[lifecycle]
+
+    hook.component[lifecycle] = function () {
+      const callback = hook.callback
+      originalLifecycle && originalLifecycle.call(component, ...arguments)
+      return callback && callback.call(component, ...arguments)
+    }
+  } else {
+    hook.callback = callback
+  }
+}
+
+export function useDidShow (callback) {
+  usePageLifecycle(callback, 'componentDidShow')
+}
+
+export function useDidHide (callback) {
+  usePageLifecycle(callback, 'componentDidHide')
+}
+
+export function usePullDownRefresh (callback) {
+  usePageLifecycle(callback, 'onPullDownRefresh')
+}
+
+export function useReachBottom (callback) {
+  usePageLifecycle(callback, 'onReachBottom')
+}
+
+export function usePageScroll (callback) {
+  usePageLifecycle(callback, 'onPageScroll')
+}
+
+export function useResize (callback) {
+  usePageLifecycle(callback, 'onResize')
+}
+
+export function useShareAppMessage (callback) {
+  usePageLifecycle(callback, 'onShareAppMessage')
+}
+
+export function useTabItemTap (callback) {
+  usePageLifecycle(callback, 'onTabItemTap')
+}
+
+export function useShareTimeline (callback) {
+  usePageLifecycle(callback, 'onShareTimeline')
+}
+
+export function useAddToFavorites (callback) {
+  usePageLifecycle(callback, 'onAddToFavorites')
+}
+
+export function useRouter () {
+  const hook = getHooks(Current.index++)
+  if (!hook.router) {
+    hook.component = Current.current
+    hook.router = hook.component.$router
+  }
+  return hook.router
+}
+
+export function useScope () {
+  const hook = getHooks(Current.index++)
+  if (!hook.scope) {
+    hook.component = Current.current
+    hook.scope = hook.component.$scope
+  }
+  return hook.scope
 }
 
 export function useReducer (
@@ -47,7 +132,7 @@ export function useReducer (
       (action) => {
         hook.state[0] = reducer(hook.state[0], action)
         hook.component._disable = false
-        hook.component.setState({})
+        hook.component.setState({}, forceUpdateCallback)
       }
     ]
   }
@@ -58,7 +143,7 @@ function areDepsChanged (prevDeps, deps) {
   if (isNullOrUndef(prevDeps) || isNullOrUndef(deps)) {
     return true
   }
-  return deps.some((a, i) => a !== prevDeps[i])
+  return deps.some((d, i) => !objectIs(d, prevDeps[i]))
 }
 
 export function invokeEffects (component, delay) {
@@ -102,7 +187,7 @@ function invokeScheduleEffects (component) {
 
 function useEffectImpl (effect, deps, delay) {
   const hook = getHooks(Current.index++)
-  if (Current.current._disableHooks || !Current.current.__isReady) {
+  if (Current.current._disableEffect || !Current.current.__isReady) {
     return
   }
   if (areDepsChanged(hook.deps, deps)) {
@@ -162,4 +247,23 @@ export function useImperativeHandle (ref, init, deps) {
       }
     }
   }, isArray(deps) ? deps.concat([ref]) : undefined)
+}
+
+export function useContext ({ context }) {
+  const emitter = context.emitter
+  if (emitter === null) {
+    return context._defaultValue
+  }
+  const hook = getHooks(Current.index++)
+  if (isUndefined(hook.context)) {
+    hook.context = true
+    hook.component = Current.current
+    emitter.on(_ => {
+      if (hook.component) {
+        hook.component._disable = false
+        hook.component.setState({})
+      }
+    })
+  }
+  return emitter.value
 }

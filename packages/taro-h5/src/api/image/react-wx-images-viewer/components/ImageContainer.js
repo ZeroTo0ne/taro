@@ -126,6 +126,7 @@ class ImageContainer extends PureComponent {
 
   componentWillMount () {
     this.loadImg(this.props.src)
+    window.addEventListener('popstate', this.handlePopState)
   }
 
   componentWillUnmount () {
@@ -133,6 +134,13 @@ class ImageContainer extends PureComponent {
     if (this.animationID) {
       raf.cancel(this.animationID)
     }
+    window.removeEventListener('popstate', this.handlePopState)
+  }
+
+  handlePopState = () => {
+    window.removeEventListener('popstate', this.handlePopState)
+    this.context.onError({ errMsg: 'previewImage:fail cancel' })
+    this.context.onClose()
   }
 
   onLoad = () => {
@@ -192,8 +200,8 @@ class ImageContainer extends PureComponent {
 
   handleTouchStart = (event) => {
     // console.info('handleTouchStart')
-    // event.preventDefault()
-    // event.stopPropagation()
+    event.preventDefault()
+    event.stopPropagation()
     if (this.animationID) {
       raf.cancel(this.animationID)
     }
@@ -240,8 +248,8 @@ class ImageContainer extends PureComponent {
   }
 
   handleTouchMove = (event) => {
-    // event.preventDefault()
-    // event.stopPropagation()
+    event.preventDefault()
+    event.stopPropagation()
 
     switch (event.touches.length) {
       case 1: {
@@ -319,7 +327,7 @@ class ImageContainer extends PureComponent {
 
   handleTouchEnd = (event) => {
     // console.info('handleTouchEnd', event.touches.length)
-    // event.preventDefault()
+    event.preventDefault()
 
     if (this.isTwoFingerMode) { // 双指操作结束
       const touchLen = event.touches.length
@@ -368,7 +376,7 @@ class ImageContainer extends PureComponent {
       // console.info('handleTouchEnd one diffTime = %s, diffX = %s, diffy = %s', diffTime, diffX, diffY)
       // 判断为点击则关闭图片浏览组件
       if (diffTime < maxTapTimeValue && Math.abs(diffX) < minTapMoveValue && Math.abs(diffY) < minTapMoveValue) {
-        this.context.onClose()
+        setTimeout(this.context.onClose, 300)
         return
       }
 

@@ -228,7 +228,11 @@ class PullToRefresh extends Nerv.Component {
   setContentStyle = (ty) => {
     // todos: Why sometimes do not have `this.contentRef` ?
     if (this.contentRef) {
-      setTransform(this.contentRef.style, `translate3d(0px,${ty}px,0)`)
+      if (ty) {
+        setTransform(this.contentRef.style, `translate3d(0px,${ty}px,0)`)
+      } else {
+        setTransform(this.contentRef.style, `none`)
+      }
     }
   }
 
@@ -248,16 +252,24 @@ class PullToRefresh extends Nerv.Component {
         render={() => children} />
     )
 
-    const renderRefresh = (cls) => {
-      const cla = classNames(cls, !this.state.dragOnEdge && `${prefixCls}-transition`)
+    const renderRefresh = cls => {
+      const { currSt, dragOnEdge } = this.state
+      const cla = classNames(cls, !dragOnEdge && `${prefixCls}-transition`)
+      const showIndicator = currSt === 'activate' || currSt === 'release'
       return (
         <div className={`${prefixCls}-content-wrapper`}>
-          <div className={cla} ref={el => {
-            this.contentRef = el
-          }}>
-            {/* <div className={`${prefixCls}-indicator`}>
-              {(indicator)[this.state.currSt] || (INDICATOR)[this.state.currSt]}
-            </div> */}
+          <div
+            className={cla}
+            ref={el => {
+              this.contentRef = el
+            }}>
+            {showIndicator && (
+              <div className={`${prefixCls}-indicator`}>
+                <div />
+                <div />
+                <div />
+              </div>
+            )}
             {renderChildren}
           </div>
         </div>

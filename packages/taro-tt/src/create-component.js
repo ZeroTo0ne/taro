@@ -1,9 +1,10 @@
 import { getCurrentPageUrl } from '@tarojs/utils'
-import { commitAttachRef, detachAllRef, Current } from '@tarojs/taro'
-import { isEmptyObject, isFunction } from './util'
-import { updateComponent } from './lifecycle'
+import { commitAttachRef, detachAllRef, Current, eventCenter } from '@tarojs/taro'
+import { isEmptyObject, isFunction, isArray } from './util'
+import { mountComponent, updateComponent } from './lifecycle'
 import { cacheDataSet, cacheDataGet, cacheDataHas } from './data-cache'
 import propsManager from './propsManager'
+import nextTick from './next-tick'
 
 const anonymousFnNamePreffix = 'funPrivate'
 const preloadPrivateKey = '__preload_'
@@ -22,8 +23,25 @@ function bindProperties (weappComponentConf, ComponentClass, isPage) {
   weappComponentConf.properties.compid = {
     type: null,
     value: null,
-    observer () {
-      initComponent.apply(this, [ComponentClass, isPage])
+    observer (newVal, oldVal) {
+      // 头条基础库1.38.2后，太早 setData $taroCompReady 为 true 时，setData 虽然成功，但 slot 会不显示。
+      // 因此不在 observer 里 initComponent，在组件 attached 时 initComponent 吧。
+      // initComponent.apply(this, [ComponentClass, isPage])
+      if (oldVal && oldVal !== newVal) {
+        const { extraProps } = this.data
+        const component = this.$component
+        propsManager.observers[newVal] = {
+          component,
+          ComponentClass: component.constructor
+        }
+        const nextProps = filterProps(component.constructor.defaultProps, propsManager.map[newVal], component.props, extraProps || null)
+        this.$component.props = nextProps
+        nextTick(() => {
+          this.$component._unsafeCallUpdate = true
+          updateComponent(this.$component)
+          this.$component._unsafeCallUpdate = false
+        })
+      }
     }
   }
 }
@@ -77,7 +95,7 @@ function processEvent (eventHandlerName, obj) {
     // 解析从dataset中传过来的参数
     const dataset = event.currentTarget.dataset || {}
     const bindArgs = {}
-    const eventType = event.type.toLocaleLowerCase()
+    const eventType = event.type ? event.type.toLocaleLowerCase() : null
 
     if (event.detail && event.detail.__detail) Object.assign(dataset, event.detail.__detail)
 
@@ -164,12 +182,63 @@ export function filterProps (defaultProps = {}, propsFromPropsManager = {}, curA
 }
 
 export function componentTrigger (component, key, args) {
+  args = args || []
+
+  if (key === 'componentDidMount') {
+    if (component['$$hasLoopRef']) {
+      Current.current = component
+      Current.index = 0
+      component._disableEffect = true
+      component._createData(component.state, component.props, true)
+      component._disableEffect = false
+      Current.current = null
+    }
+
+    if (component['$$refs'] && component['$$refs'].length > 0) {
+      let refs = {}
+      const refComponents = []
+      component['$$refs'].forEach(ref => {
+        refComponents.push(new Promise((resolve, reject) => {
+          const query = tt.createSelectorQuery().in(component.$scope)
+          if (ref.type === 'component') {
+            component.$scope.selectComponent(`#${ref.id}`, target => {
+              resolve({
+                target: target ? target.$component || target : null,
+                ref
+              })
+            })
+          } else {
+            resolve({
+              target: query.select(`#${ref.id}`),
+              ref
+            })
+          }
+        }))
+      })
+      Promise.all(refComponents)
+        .then(targets => {
+          targets.forEach(({ ref, target }) => {
+            commitAttachRef(ref, target, component, refs, true)
+            ref.target = target
+          })
+          component.refs = Object.assign({}, component.refs || {}, refs)
+          // 此处执行componentDidMount
+          component[key] && typeof component[key] === 'function' && component[key](...args)
+        })
+        .catch(err => {
+          console.error(err)
+          component[key] && typeof component[key] === 'function' && component[key](...args)
+        })
+        // 此处跳过执行componentDidMount，在refComponents完成后再次执行
+      return
+    }
+  }
+
   if (key === 'componentWillUnmount') {
     const compid = component.$scope.data.compid
     if (compid) propsManager.delete(compid)
   }
 
-  args = args || []
   component[key] && typeof component[key] === 'function' && component[key](...args)
   if (key === 'componentWillUnmount') {
     component._dirty = true
@@ -216,7 +285,7 @@ function initComponent (ComponentClass, isPage) {
     this.$component.props = nextProps
   }
   if (hasPageInited || isPage) {
-    updateComponent(this.$component)
+    mountComponent(this.$component)
   }
 }
 
@@ -245,6 +314,7 @@ function createComponent (ComponentClass, isPage) {
       isPage && (hasPageInited = false)
       if (isPage && cacheDataHas(preloadInitedComponent)) {
         this.$component = cacheDataGet(preloadInitedComponent, true)
+        this.$component.$componentType = 'PAGE'
       } else {
         this.$component = new ComponentClass({}, isPage)
       }
@@ -270,37 +340,10 @@ function createComponent (ComponentClass, isPage) {
       initComponent.apply(this, [ComponentClass, isPage])
     },
     ready () {
-      setTimeout(() => {
-        const component = this.$component
-        if (component['$$refs'] && component['$$refs'].length > 0) {
-          let refs = {}
-          const refComponents = component['$$refs'].map(ref => new Promise((resolve, reject) => {
-            const query = tt.createSelectorQuery().in(this)
-            if (ref.type === 'component') {
-              this.selectComponent(`#${ref.id}`, target => {
-                resolve({
-                  target: target.$component || target,
-                  ref
-                })
-              })
-            } else {
-              resolve({
-                target: query.select(`#${ref.id}`),
-                ref
-              })
-            }
-          }))
-          Promise.all(refComponents)
-            .then(targets => {
-              targets.forEach(({ ref, target }) => {
-                commitAttachRef(ref, target, component, refs, true)
-                ref.target = target
-              })
-              component.refs = Object.assign({}, component.refs || {}, refs)
-            })
-            .catch(err => console.error(err))
-        }
-      }, 0)
+      if (!this.$component.__mounted) {
+        this.$component.__mounted = true
+        componentTrigger(this.$component, 'componentDidMount')
+      }
     },
     detached () {
       const component = this.$component
@@ -310,6 +353,10 @@ function createComponent (ComponentClass, isPage) {
           hook.cleanup()
         }
       })
+      const events = component.$$renderPropsEvents
+      if (isArray(events)) {
+        events.forEach(e => eventCenter.off(e))
+      }
     }
   }
   if (isPage) {
@@ -326,13 +373,13 @@ function createComponent (ComponentClass, isPage) {
       if (componentInstance[fn] && typeof componentInstance[fn] === 'function') {
         weappComponentConf[fn] = function () {
           const component = this.$component
-          if (component[fn] && typeof component[fn] === 'function') {
+          if (component && component[fn] && typeof component[fn] === 'function') {
             return component[fn](...arguments)
           }
         }
       }
     })
-    globPageRegistPath && cacheDataSet(globPageRegistPath, ComponentClass)
+    ComponentClass.$$componentPath && cacheDataSet(ComponentClass.$$componentPath, ComponentClass)
   }
   bindProperties(weappComponentConf, ComponentClass, isPage)
   bindBehaviors(weappComponentConf, ComponentClass)

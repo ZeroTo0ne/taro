@@ -2,20 +2,22 @@
 
 const program = require('commander')
 
-const Project = require('../dist/project').default
+const Project = require('../dist/create/project').default
 
 program
   .option('--name [name]', '项目名称')
   .option('--description [description]', '项目介绍')
   .option('--typescript', '使用TypeScript')
   .option('--no-typescript', '不使用TypeScript')
-  .option('--template [template]', '项目模板(default/redux/mobx/wxcloud/wxplugin)')
+  .option('--template-source [templateSource]', '项目模板源')
+  .option('--clone [clone]', '拉取远程模板时使用git clone')
+  .option('--template [template]', '项目模板')
   .option('--css [css]', 'CSS预处理器(sass/less/stylus/none)')
   .parse(process.argv)
 
 const args = program.args
-const { template, description, name, css } = program
-let typescript = false
+const { template, templateSource, clone, description, name, css } = program
+let typescript
 
 /**
  * 非标准做法
@@ -31,6 +33,9 @@ const projectName = args[0] || name
 
 const project = new Project({
   projectName,
+  projectDir: process.cwd(),
+  templateSource,
+  clone,
   template,
   description,
   typescript,

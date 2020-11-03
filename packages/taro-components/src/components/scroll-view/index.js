@@ -4,7 +4,7 @@ import omit from 'omit.js'
 import classNames from 'classnames'
 import './style/index.scss'
 
-function easeOutScroll (from, to, callback) {
+function easeOutScroll (from = 0, to = 0, callback) {
   if (from === to || typeof from !== 'number') {
     return
   }
@@ -29,12 +29,39 @@ function easeOutScroll (from, to, callback) {
 }
 function throttle (fn, delay) {
   let timer = null
-  return function () {
+  return function (...arrs) {
     clearTimeout(timer)
     timer = setTimeout(function () {
-      fn()
+      fn(...arrs)
     }, delay)
   }
+}
+function scrollIntoView (id) {
+  document.querySelector(`#${id}`).scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+    inline: 'start'
+  })
+}
+function scrollVertical (top, isAnimation) {
+  if (isAnimation) {
+    easeOutScroll(this._scrollTop, top, pos => {
+      if (this.container) this.container.scrollTop = pos
+    })
+  } else {
+    if (this.container) this.container.scrollTop = top
+  }
+  this._scrollTop = top
+}
+function scrollHorizontal (left, isAnimation) {
+  if (isAnimation) {
+    easeOutScroll(this._scrollLeft, left, pos => {
+      if (this.container) this.container.scrollLeft = pos
+    })
+  } else {
+    if (this.container) this.container.scrollLeft = left
+  }
+  this._scrollLeft = left
 }
 class ScrollView extends Nerv.Component {
   constructor () {
@@ -46,62 +73,53 @@ class ScrollView extends Nerv.Component {
   }
 
   componentDidMount () {
-    setTimeout(() => {
-      const props = this.props
-      if (props.scrollY && typeof props.scrollTop === 'number') {
-        if ('scrollWithAnimation' in props) {
-          easeOutScroll(0, props.scrollTop, pos => {
-            this.container.scrollTop = pos
-          })
-        } else {
-          this.container.scrollTop = props.scrollTop
-        }
-        this._scrollTop = props.scrollTop
-      }
-      if (props.scrollX && typeof props.scrollLeft === 'number') {
-        if ('scrollWithAnimation' in props) {
-          easeOutScroll(0, props.scrollLeft, pos => {
-            this.container.scrollLeft = pos
-          })
-        } else {
-          this.container.scrollLeft = props.scrollLeft
-        }
-        this._scrollLeft = props.scrollLeft
-      }
-    }, 10)
+    this.handleScroll(this.props, true)
   }
 
   componentWillReceiveProps (nextProps) {
-    const props = this.props
-    // Y 轴滚动
+    this.handleScroll(nextProps)
+  }
+
+  handleScroll (props, isInit = false) {
+    // scrollIntoView
     if (
-      nextProps.scrollY &&
-      typeof nextProps.scrollTop === 'number' &&
-      nextProps.scrollTop !== this._scrollTop
+      props.scrollIntoView &&
+      typeof props.scrollIntoView === 'string' &&
+      document &&
+      document.querySelector &&
+      document.querySelector(`#${props.scrollIntoView}`)
     ) {
-      if ('scrollWithAnimation' in nextProps) {
-        easeOutScroll(this._scrollTop, nextProps.scrollTop, pos => {
-          this.container.scrollTop = pos
-        })
+      if (isInit) {
+        setTimeout(() => scrollIntoView(props.scrollIntoView), 500)
       } else {
-        this.container.scrollTop = nextProps.scrollTop
+        scrollIntoView(props.scrollIntoView)
       }
-      this._scrollTop = nextProps.scrollTop
-    }
-    // X 轴滚动
-    if (
-      nextProps.scrollX &&
-      typeof props.scrollLeft === 'number' &&
-      nextProps.scrollLeft !== this._scrollLeft
-    ) {
-      if ('scrollWithAnimation' in nextProps) {
-        easeOutScroll(this._scrollLeft, nextProps.scrollLeft, pos => {
-          this.container.scrollLeft = pos
-        })
-      } else {
-        this.container.scrollLeft = nextProps.scrollLeft
+    } else {
+      const isAnimation = 'scrollWithAnimation' in props
+      // Y 轴滚动
+      if (
+        props.scrollY &&
+        typeof props.scrollTop === 'number' &&
+        props.scrollTop !== this._scrollTop
+      ) {
+        if (isInit) {
+          setTimeout(() => scrollVertical.bind(this)(props.scrollTop, isAnimation), 10)
+        } else {
+          scrollVertical.bind(this)(props.scrollTop, isAnimation)
+        }
       }
-      this._scrollLeft = nextProps.scrollLeft
+      // X 轴滚动
+      if (
+        props.scrollX &&
+        typeof props.scrollLeft === 'number' &&
+        props.scrollLeft !== this._scrollLeft
+      ) {
+        if (isInit) {
+          setTimeout(() => scrollHorizontal.bind(this)(props.scrollLeft, isAnimation), 10)
+        } else {
+          scrollHorizontal.bind(this)(props.scrollLeft, isAnimation)
+        }
+      }
     }
   }
 
@@ -111,6 +129,7 @@ class ScrollView extends Nerv.Component {
       onScroll,
       onScrollToUpper,
       onScrollToLower,
+      onTouchMove,
       scrollX,
       scrollY
     } = this.props
@@ -125,7 +144,8 @@ class ScrollView extends Nerv.Component {
     )
     upperThreshold = parseInt(upperThreshold)
     lowerThreshold = parseInt(lowerThreshold)
-    const uperAndLower = () => {
+    const uperAndLower = (e) => {
+      if (!this.container) return
       const {
         offsetWidth,
         offsetHeight,
@@ -141,14 +161,14 @@ class ScrollView extends Nerv.Component {
           (this.props.scrollX &&
             offsetWidth + scrollLeft + lowerThreshold >= scrollWidth))
       ) {
-        onScrollToLower()
+        onScrollToLower(e)
       }
       if (
         onScrollToUpper &&
         ((this.props.scrollY && scrollTop <= upperThreshold) ||
           (this.props.scrollX && scrollLeft <= upperThreshold))
       ) {
-        onScrollToUpper()
+        onScrollToUpper(e)
       }
     }
     const uperAndLowerThrottle = throttle(uperAndLower, 200)
@@ -161,24 +181,38 @@ class ScrollView extends Nerv.Component {
       } = this.container
       this._scrollLeft = scrollLeft
       this._scrollTop = scrollTop
-      e.detail = {
-        scrollLeft,
-        scrollTop,
-        scrollHeight,
-        scrollWidth
-      }
-      uperAndLowerThrottle()
+      Object.defineProperty(e, 'detail', {
+        enumerable: true,
+        writable: true,
+        value: {
+          scrollLeft,
+          scrollTop,
+          scrollHeight,
+          scrollWidth
+        }
+      })
+      uperAndLowerThrottle(e)
       onScroll && onScroll(e)
+    }
+    const _onTouchMove = e => {
+      onTouchMove ? onTouchMove(e) : this.onTouchMove(e)
     }
     return (
       <div
         ref={container => {
           this.container = container
         }}
-        {...omit(this.props, ['className', 'scrollTop', 'scrollLeft'])}
+        {
+        ...omit(this.props, ['className', 'scrollTop', 'scrollLeft'])
+        }
         className={cls}
         onScroll={_onScroll}
-        onTouchMove={this.onTouchMove}>
+        onTouchMove={
+          _onTouchMove
+        }
+        onLoad={e => {
+          console.log('onload', e)
+        }} >
         {this.props.children}
       </div>
     )

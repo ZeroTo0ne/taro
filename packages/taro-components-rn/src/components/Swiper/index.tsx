@@ -1,4 +1,7 @@
 /**
+ * 注意事项：
+ *   Swiper 不能加 `flex: 1`
+ *
  * ✔ indicatorDots(indicator-dots)
  * ✔ indicatorColor(indicator-color)
  * ✔ indicatorActiveColor(indicator-active-color)
@@ -20,7 +23,7 @@
  *
  * @example
  * <Swiper
- *   showsPagination={true}
+ *   indicatorDots={true}
  *   indicatorColor="white"
  *   indicatorActiveColor="purple"
  *   autoplay={false}
@@ -46,14 +49,11 @@
 
 import * as React from 'react'
 import {
-  // Text,
-  // View,
   StyleSheet,
-  StyleProp,
   ViewStyle
 } from 'react-native'
-import Swiper from '@nart/react-native-swiper'
-// import styles from './styles'
+// import Swiper from 'react-native-swiper'
+import Swiper from '@manjiz/react-native-swiper'
 import { noop } from '../../utils'
 import { SwiperProps } from './PropsType'
 
@@ -92,13 +92,21 @@ class _Swiper extends React.Component<SwiperProps> {
       vertical,
     } = this.props
 
-    let styleHeight: number | undefined
+    // 从样式中取出部分常用样式
     let formattedStyle: ViewStyle | undefined
+    const containerStyle: { [key: string]: any } = {}
     if (style) {
       const flattenStyle: ViewStyle = StyleSheet.flatten(style)
       if (flattenStyle) {
-        styleHeight = flattenStyle.height as number
-        delete flattenStyle.height
+        for (let key in flattenStyle) {
+          if (/width|height|margin.*/.test(key)) {
+            containerStyle[key] = flattenStyle[key as keyof ViewStyle]
+            delete flattenStyle[key as keyof ViewStyle]
+          }
+        }
+        if (containerStyle.width || containerStyle.height) {
+          containerStyle.flex = 0
+        }
         formattedStyle = flattenStyle
       }
     }
@@ -115,7 +123,7 @@ class _Swiper extends React.Component<SwiperProps> {
         horizontal={!vertical}
         onIndexChanged={this.onIndexChanged}
         onMomentumScrollEnd={this.onMomentumScrollEnd}
-        height={styleHeight}
+        containerStyle={containerStyle}
         style={formattedStyle || style}
       >
         {children}

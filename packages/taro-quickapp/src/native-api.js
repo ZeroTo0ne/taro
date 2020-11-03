@@ -4,11 +4,9 @@ import {
   otherApis,
   initPxTransform
 } from '@tarojs/taro'
-import request from './api/request'
-import storage from './api/storage'
-import router from './api/router'
-import interactive from './api/interactive'
-import equipment from './api/equipment'
+
+import * as supportApi from './api/index'
+import appGlobal from './global'
 
 function processApis (taro) {
   const weApis = Object.assign({}, onAndSyncApis, noPromiseApis, otherApis)
@@ -27,11 +25,15 @@ function pxTransform (size) {
   return size + 'px'
 }
 
+function getApp () {
+  return appGlobal.$app || {}
+}
+
 export default function initNativeApi (taro) {
   processApis(taro)
-  taro.request = request
   taro.canIUseWebp = canIUseWebp
   taro.initPxTransform = initPxTransform.bind(taro)
   taro.pxTransform = pxTransform.bind(taro)
-  Object.assign(taro, storage, router, interactive, equipment)
+  taro.getApp = getApp
+  Object.assign(taro, supportApi)
 }

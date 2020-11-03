@@ -1,4 +1,6 @@
-import { findRef } from '../utils/index'
+import { findDOMNode } from 'nervjs'
+
+import { findRef } from '../utils'
 
 /**
 * 创建 canvas 的绘图上下文 CanvasContext 对象
@@ -8,9 +10,10 @@ import { findRef } from '../utils/index'
 const createCanvasContext = (canvasId, componentInstance) => {
   const refId = `__taroref_${canvasId}`
   const component = findRef(refId, componentInstance)
+  const canvasDom = findDOMNode(component)
 
   /** @type {HTMLCanvasElement} */
-  const canvas = component.vnode.dom.querySelector(`[canvasId=${canvasId}]`)
+  const canvas = canvasDom.querySelector(`[canvasId=${canvasId}]`)
 
   /** @type {CanvasRenderingContext2D} */
   const ctx = canvas.getContext('2d')
@@ -162,35 +165,35 @@ const createCanvasContext = (canvasId, componentInstance) => {
   ]
 
   const functionProperties = [
-    'arc',
-    'arcTo',
-    'beginPath',
-    'bezierCurveTo',
-    'clearRect',
-    'clip',
-    'closePath',
-    'createCircularGradient',
-    'createLinearGradient',
-    'createPattern',
-    'drawImage',
-    'fill',
-    'fillRect',
-    'fillText',
-    'lineTo',
-    'measureText',
-    'moveTo',
-    'quadraticCurveTo',
-    'rect',
-    'restore',
-    'rotate',
-    'save',
-    'scale',
-    'setTransform',
-    'stroke',
-    'strokeRect',
-    'strokeText',
-    'transform',
-    'translate'
+    ['arc'],
+    ['arcTo'],
+    ['beginPath'],
+    ['bezierCurveTo'],
+    ['clearRect'],
+    ['clip'],
+    ['closePath'],
+    ['createCircularGradient'],
+    ['createLinearGradient'],
+    ['createPattern'],
+    ['drawImage'],
+    ['fill'],
+    ['fillRect'],
+    ['fillText'],
+    ['lineTo'],
+    ['measureText', true],
+    ['moveTo'],
+    ['quadraticCurveTo'],
+    ['rect'],
+    ['restore'],
+    ['rotate'],
+    ['save'],
+    ['scale'],
+    ['setTransform'],
+    ['stroke'],
+    ['strokeRect'],
+    ['strokeText'],
+    ['transform'],
+    ['translate']
   ]
 
   const valueProperties = [
@@ -227,11 +230,11 @@ const createCanvasContext = (canvasId, componentInstance) => {
     })
   })
 
-  functionProperties.forEach(funcName => {
+  functionProperties.forEach(([funcName, isSync]) => {
     Object.defineProperty(CanvasContext, funcName, {
-      get () {
-        return enqueueActions(ctx[funcName])
-      },
+      get: isSync
+        ? () => ctx[funcName].bind(ctx)
+        : () => enqueueActions(ctx[funcName]),
       enumerable: true
     })
   })

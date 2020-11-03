@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { StyleProp, ViewStyle } from 'react-native'
+import { StyleProp, ViewStyle, ListRenderItem } from 'react-native'
 
 export type ScrollMetrics = {
   contentLength: number;
@@ -32,7 +32,12 @@ export type EventOnScroll = {
   }
 }
 
-export interface ScrollViewProps {
+export interface ScrollViewState {
+  snapScrollTop: number;
+  snapScrollLeft: number;
+}
+
+export interface ScrollViewProps<ItemT> {
   children?: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   scrollX?: boolean;
@@ -45,4 +50,8 @@ export interface ScrollViewProps {
   onScrollToUpper?: (evt: EventOnScrollToUpper) => void;
   onScrollToLower?: (evt: EventOnScrollToLower) => void;
   onScroll?: (evt: EventOnScroll) => void;
+  // RN 属性
+  contentContainerStyle?: StyleProp<ViewStyle>;
+  data?: ReadonlyArray<ItemT> | null;
+  renderItem?: ListRenderItem<ItemT>;
 }

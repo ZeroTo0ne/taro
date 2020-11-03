@@ -8,7 +8,9 @@ import {
   isDifferentArray,
   copyFileSync,
   getBabelConfig,
-  uglifyJS
+  uglifyJS,
+  extnameExpRegOf,
+  generateAlipayPath
 } from '../util'
 import {
   BUILD_TYPES,
@@ -54,13 +56,16 @@ export function compileDepScripts (scriptFiles: string[], needUseBabel?: boolean
     if (path.isAbsolute(item)) {
       let outputItem
       if (NODE_MODULES_REG.test(item)) {
-        outputItem = item.replace(nodeModulesPath, npmOutputDir).replace(path.extname(item), '.js')
+        outputItem = item.replace(nodeModulesPath, npmOutputDir).replace(extnameExpRegOf(item), '.js')
       } else {
-        outputItem = item.replace(path.join(sourceDir), path.join(outputDir)).replace(path.extname(item), '.js')
+        outputItem = item.replace(path.join(sourceDir), path.join(outputDir)).replace(extnameExpRegOf(item), '.js')
+      }
+      if (buildAdapter === BUILD_TYPES.ALIPAY) {
+        outputItem = generateAlipayPath(outputItem)
       }
       const weappConf = Object.assign({}, projectConfig.weapp)
       const useCompileConf = Object.assign({}, weappConf.compile)
-      const compileExclude = useCompileConf.exclude || []
+      const compileExclude = (useCompileConf.exclude || []).filter(item => !/(?:\/|^)node_modules(\/|$)/.test(item))
       let isInCompileExclude = false
       compileExclude.forEach(excludeItem => {
         if (item.indexOf(path.join(appPath, excludeItem)) >= 0) {
@@ -78,6 +83,7 @@ export function compileDepScripts (scriptFiles: string[], needUseBabel?: boolean
           const transformResult = wxTransformer({
             code,
             sourcePath: item,
+            sourceDir,
             outputPath: outputItem,
             isNormal: true,
             isTyped: REG_TYPESCRIPT.test(item),
@@ -94,7 +100,7 @@ export function compileDepScripts (scriptFiles: string[], needUseBabel?: boolean
           }
           fs.ensureDirSync(path.dirname(outputItem))
           if (isProduction && needUseBabel) {
-            uglifyJS(resCode, item, appPath, projectConfig!.plugins!.uglify as TogglableOptions)
+            resCode = uglifyJS(resCode, item, appPath, projectConfig!.plugins!.uglify as TogglableOptions)
           }
           if (NODE_MODULES_REG.test(item)) {
             resCode = npmCodeHack(outputItem, resCode, buildAdapter)
@@ -139,6 +145,7 @@ export async function compileScriptFile (
 ): Promise<string> {
   const {
     appPath,
+    sourceDir,
     constantsReplaceList,
     jsxAttributeNameReplace,
     projectConfig
@@ -155,6 +162,7 @@ export async function compileScriptFile (
   const transformResult: IWxTransformResult = wxTransformer({
     code,
     sourcePath: sourceFilePath,
+    sourceDir,
     outputPath: outputFilePath,
     isNormal: true,
     isTyped: false,

@@ -53,7 +53,9 @@ it('should leave other apis untouched', function () {
   const taroName = defaultImport!.local.name
   const namedImports = getNamedImports(body[0].specifiers)
   expect(namedImports).toEqual(new Set())
+  // @ts-ignore
   expect(t.isMemberExpression(body[1].expression)).toBeTruthy()
+  // @ts-ignore
   expect((body[1].expression as t.MemberExpression)).toMatchObject(t.memberExpression(
     t.identifier(taroName),
     t.identifier('noop')
@@ -78,8 +80,10 @@ it('should move static apis under "Taro"', function () {
   expect(defaultImport).toBeTruthy()
 
   const taroName = defaultImport!.local.name
+  // @ts-ignore
   let memberExpression = body[1].expression
   if (t.isCallExpression(body[1])) {
+    // @ts-ignore
     memberExpression = (body[1].expression as t.CallExpression).callee
   }
   expect(memberExpression).toMatchObject(t.memberExpression(
@@ -123,4 +127,41 @@ it('should not go wrong when using an api twice', function () {
     const result = babel.transform(code, { plugins: [ pluginOptions ]})
     expect(result.code).toMatchSnapshot();
   }).not.toThrowError()
+})
+
+it('should preserve default imports', function () {
+  const code = `
+    import Taro from '@tarojs/taro-h5'
+    console.log(Taro)
+  `
+  const result = babel.transform(code, { plugins: [pluginOptions] })
+  expect(result.code).toMatchSnapshot();
+})
+
+it('should preserve assignments in lefthands', function () {
+  const code = `
+    import Taro from '@tarojs/taro-h5'
+    let animation 
+    animation = Taro.createAnimation({
+      transformOrigin: "50% 50%",
+      duration: 1000,
+      timingFunction: "ease",
+      delay: 0
+    });
+    Taro.request()
+    Taro.request = ''
+    Taro['request'] = ''
+  `
+  const result = babel.transform(code, { plugins: [pluginOptions] })
+  expect(result.code).toMatchSnapshot();
+})
+
+it('should support rename of imported names', function () {
+  const code = `
+  // import { inject as mobxInject, observer as mobxObserver } from '@tarojs/mobx'
+  import { Component as TaroComponent } from "@tarojs/taro-h5";
+  export class Connected extends TaroComponent {}
+  `
+  const result = babel.transform(code, { plugins: [pluginOptions] })
+  expect(result.code).toMatchSnapshot();
 })

@@ -3,6 +3,7 @@ import * as t from 'babel-types'
 import generate from 'babel-generator'
 import template from 'babel-template'
 import * as html from 'html'
+import T from '@tarojs/taro'
 
 export function prettyPrint (str: string): string {
   return html.prettyPrint(str, { max_char: 0 })
@@ -34,10 +35,26 @@ const internalFunction = `function isObject(arg) {
 }
 
 function getElementById (a, b, c) {
-  if (c) {
+  if (c === 'component') {
     return 'test-component-ref'
+  } else if (c === 'dom') {
+    return 'test-ref'
   }
-  return 'test-ref'
+}
+
+function handleLoopRef (component, id, type, handler) {
+  const dom = getElementById(component, id, type)
+
+  const handlerType = typeof handler
+  if (handlerType !== 'function' && handlerType !== 'object') {
+    return
+  }
+
+  if (handlerType === 'object') {
+    handler.current = dom
+  } else if (handlerType === 'function') {
+    handler(dom)
+  }
 }
 
 var Current = {
@@ -49,7 +66,7 @@ function genLoopCompid () {
 }
 
 function genCompid () {
-  return undefined
+  return ''
 }
 
 var propsManager = {
@@ -128,6 +145,7 @@ export const baseOptions = {
   isApp: false,
   sourcePath: __dirname,
   outputPath: __dirname,
+  sourcetDir: __dirname,
   code: '',
   isTyped: false
 }
@@ -188,6 +206,7 @@ export function evalClass (ast: t.File, props = '', isRequire = false) {
   code = internalFunction + code
 
   // tslint:disable-next-line
+  const Taro = T
   return eval(code)
 }
 
